@@ -1,0 +1,364 @@
+// NVIDIA Image Scaling (NVScaler) für OBS Studio
+// GENERIERT von tools/gen_nis_effect.py - nicht von Hand ändern.
+// Algorithmus: NVIDIA Image Scaling (MIT-Lizenz, Copyright (c) 2022 NVIDIA Corporation & Affiliates).
+//
+// Gültig für Skalierungen von 1x bis 2x (wie im Original).
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform texture2d coef;      // 4 x 64, RGBA32F: Spalte 0/1 = Skalierer, Spalte 2/3 = USM
+
+uniform float2 input_size;   // Quellgröße in Pixeln
+uniform float2 output_size;  // Zielgröße in Pixeln
+uniform float4 nis_detect;   // kDetectRatio, kDetectThres, kMinContrastRatio, kRatioNorm
+uniform float4 nis_sharp1;   // kSharpStartY, kSharpScaleY, kSharpStrengthMin, kSharpStrengthScale
+uniform float4 nis_sharp2;   // kSharpLimitMin, kSharpLimitScale, 0, 0
+
+sampler_state point_clamp {
+	Filter    = Point;
+	AddressU  = Clamp;
+	AddressV  = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v_in)
+{
+	VertData vert_out;
+	vert_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+	vert_out.uv  = v_in.uv;
+	return vert_out;
+}
+
+float LumaOf(float3 c)
+{
+	return 0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z;
+}
+
+float3 RgbAt(float2 texel)
+{
+	return image.Sample(point_clamp, (texel + 0.5) / input_size).rgb;
+}
+
+float LumaAt(float2 texel)
+{
+	return LumaOf(RgbAt(texel));
+}
+
+// Koeffizienten: col 0..3, phase 0..63
+float4 LoadCoef(float col, float phase)
+{
+	return coef.Sample(point_clamp, float2((col + 0.5) / 4.0, (phase + 0.5) / 64.0));
+}
+
+// Kantengewichte (0, 90, 45, 135 Grad) aus einem 3x3-Fenster.
+float4 EdgeMap(float w00, float w01, float w02,
+	float w10, float w11, float w12,
+	float w20, float w21, float w22)
+{
+	float g_0 = abs(w00 + w01 + w02 - w20 - w21 - w22);
+	float g_45 = abs(w10 + w00 + w01 - w21 - w22 - w12);
+	float g_90 = abs(w00 + w10 + w20 - w02 - w12 - w22);
+	float g_135 = abs(w10 + w20 + w21 - w01 - w02 - w12);
+
+	float g_0_90_max = max(g_0, g_90);
+	float g_0_90_min = min(g_0, g_90);
+	float g_45_135_max = max(g_45, g_135);
+	float g_45_135_min = min(g_45, g_135);
+
+	float4 result = float4(0.0, 0.0, 0.0, 0.0);
+	if (g_0_90_max + g_45_135_max > 0.0) {
+		float e_0_90 = min(g_0_90_max / (g_0_90_max + g_45_135_max), 1.0);
+		float e_45_135 = 1.0 - e_0_90;
+
+		bool c_0_90 = (g_0_90_max > (g_0_90_min * nis_detect.x)) && (g_0_90_max > nis_detect.y) && (g_0_90_max > g_45_135_min);
+		bool c_45_135 = (g_45_135_max > (g_45_135_min * nis_detect.x)) && (g_45_135_max > nis_detect.y) && (g_45_135_max > g_0_90_min);
+		bool c_g_0_90 = g_0_90_max == g_0;
+		bool c_g_45_135 = g_45_135_max == g_45;
+
+		float f_e_0_90 = 1.0;
+		float f_e_45_135 = 1.0;
+		if (c_0_90 && c_45_135) {
+			f_e_0_90 = e_0_90;
+			f_e_45_135 = e_45_135;
+		}
+
+		float weight_0 = 0.0;
+		float weight_90 = 0.0;
+		if (c_0_90) {
+			if (c_g_0_90) {
+				weight_0 = f_e_0_90;
+			} else {
+				weight_90 = f_e_0_90;
+			}
+		}
+		float weight_45 = 0.0;
+		float weight_135 = 0.0;
+		if (c_45_135) {
+			if (c_g_45_135) {
+				weight_45 = f_e_45_135;
+			} else {
+				weight_135 = f_e_45_135;
+			}
+		}
+		result = float4(weight_0, weight_90, weight_45, weight_135);
+	}
+	return result;
+}
+
+// Reduziert Ringing.
+float CalcLTI(float p0, float p1, float p2, float p3, float p4, float p5, float phase)
+{
+	float sel_a = p3;
+	float sel_b = p5;
+	if (phase <= 32.0) {
+		sel_a = p0;
+		sel_b = p2;
+	}
+	float a_min = min(min(p1, p2), sel_a);
+	float a_max = max(max(p1, p2), sel_a);
+	float b_min = min(min(p3, p4), sel_b);
+	float b_max = max(max(p3, p4), sel_b);
+
+	float a_cont = a_max - a_min;
+	float b_cont = b_max - b_min;
+
+	// kEps = 1/255, kContrastBoost = 1
+	float cont_ratio = max(a_cont, b_cont) / (min(a_cont, b_cont) + 0.003921569);
+	return 1.0 - saturate((cont_ratio - nis_detect.z) * nis_detect.w);
+}
+
+// 6-Tap-Filter plus adaptives Unsharp-Masking für eine Zeile/Spalte von 6 Werten.
+float EvalPoly6(float a0, float a1, float a2, float a3, float a4, float a5, float phase)
+{
+	float4 s0 = LoadCoef(0.0, phase);
+	float4 s1 = LoadCoef(1.0, phase);
+	float4 u0 = LoadCoef(2.0, phase);
+	float4 u1 = LoadCoef(3.0, phase);
+
+	float y = s0.x * a0 + s0.y * a1 + s0.z * a2 + s0.w * a3 + s1.x * a4 + s1.y * a5;
+	float y_usm = u0.x * a0 + u0.y * a1 + u0.z * a2 + u0.w * a3 + u1.x * a4 + u1.y * a5;
+
+	// stückweise Rampe über der Helligkeit
+	float y_scale = 1.0 - saturate((y - nis_sharp1.x) * nis_sharp1.y);
+
+	// Schärfe als Funktion der Helligkeit
+	float y_sharpness = y_scale * nis_sharp1.w + nis_sharp1.z;
+	y_usm = y_usm * y_sharpness;
+
+	// USM als Funktion der Helligkeit begrenzen
+	float y_sharpness_limit = (y_scale * nis_sharp2.y + nis_sharp2.x) * y;
+	y_usm = min(y_sharpness_limit, max(-y_sharpness_limit, y_usm));
+
+	// Ringing reduzieren
+	y_usm = y_usm * CalcLTI(a0, a1, a2, a3, a4, a5, phase);
+
+	return y + y_usm;
+}
+
+float4 PSNis(VertData v_in) : TARGET
+{
+	// Ausgabepixel -> Position im Quellbild
+	float2 dst = floor(v_in.uv * output_size);
+	float2 ratio = input_size / output_size;
+	float2 srcpos = (dst + 0.5) * ratio - 0.5;
+	float2 srcfloor = floor(srcpos);
+	float fx = srcpos.x - srcfloor.x;
+	float fy = srcpos.y - srcfloor.y;
+	float fx_int = min(floor(fx * 64.0), 63.0);
+	float fy_int = min(floor(fy * 64.0), 63.0);
+
+	// 6x6 Luma-Stützstellen, p<Zeile><Spalte>; Zeile = y, Spalte = x.
+	// p22 ist der Quellpixel srcfloor.
+	float2 origin = srcfloor - 2.0;
+	float p00 = LumaAt(origin + float2(0.0, 0.0));
+	float p01 = LumaAt(origin + float2(1.0, 0.0));
+	float p02 = LumaAt(origin + float2(2.0, 0.0));
+	float p03 = LumaAt(origin + float2(3.0, 0.0));
+	float p04 = LumaAt(origin + float2(4.0, 0.0));
+	float p05 = LumaAt(origin + float2(5.0, 0.0));
+	float p10 = LumaAt(origin + float2(0.0, 1.0));
+	float p11 = LumaAt(origin + float2(1.0, 1.0));
+	float p12 = LumaAt(origin + float2(2.0, 1.0));
+	float p13 = LumaAt(origin + float2(3.0, 1.0));
+	float p14 = LumaAt(origin + float2(4.0, 1.0));
+	float p15 = LumaAt(origin + float2(5.0, 1.0));
+	float p20 = LumaAt(origin + float2(0.0, 2.0));
+	float p21 = LumaAt(origin + float2(1.0, 2.0));
+	float p22 = LumaAt(origin + float2(2.0, 2.0));
+	float p23 = LumaAt(origin + float2(3.0, 2.0));
+	float p24 = LumaAt(origin + float2(4.0, 2.0));
+	float p25 = LumaAt(origin + float2(5.0, 2.0));
+	float p30 = LumaAt(origin + float2(0.0, 3.0));
+	float p31 = LumaAt(origin + float2(1.0, 3.0));
+	float p32 = LumaAt(origin + float2(2.0, 3.0));
+	float p33 = LumaAt(origin + float2(3.0, 3.0));
+	float p34 = LumaAt(origin + float2(4.0, 3.0));
+	float p35 = LumaAt(origin + float2(5.0, 3.0));
+	float p40 = LumaAt(origin + float2(0.0, 4.0));
+	float p41 = LumaAt(origin + float2(1.0, 4.0));
+	float p42 = LumaAt(origin + float2(2.0, 4.0));
+	float p43 = LumaAt(origin + float2(3.0, 4.0));
+	float p44 = LumaAt(origin + float2(4.0, 4.0));
+	float p45 = LumaAt(origin + float2(5.0, 4.0));
+	float p50 = LumaAt(origin + float2(0.0, 5.0));
+	float p51 = LumaAt(origin + float2(1.0, 5.0));
+	float p52 = LumaAt(origin + float2(2.0, 5.0));
+	float p53 = LumaAt(origin + float2(3.0, 5.0));
+	float p54 = LumaAt(origin + float2(4.0, 5.0));
+	float p55 = LumaAt(origin + float2(5.0, 5.0));
+
+	// Kantenkarte an den vier Eckpunkten um die Abtastposition
+	float4 e00 = EdgeMap(p11, p12, p13, p21, p22, p23, p31, p32, p33);
+	float4 e01 = EdgeMap(p12, p13, p14, p22, p23, p24, p32, p33, p34);
+	float4 e10 = EdgeMap(p21, p22, p23, p31, p32, p33, p41, p42, p43);
+	float4 e11 = EdgeMap(p22, p23, p24, p32, p33, p34, p42, p43, p44);
+	float4 w = lerp(lerp(e00, e01, fx), lerp(e10, e11, fx), fy);
+
+	// Normaler 6x6-Skalierer
+	float4 sx0 = LoadCoef(0.0, fx_int);
+	float4 sx1 = LoadCoef(1.0, fx_int);
+	float4 sy0 = LoadCoef(0.0, fy_int);
+	float4 sy1 = LoadCoef(1.0, fy_int);
+	float v0 = p00 * sy0.x + p10 * sy0.y + p20 * sy0.z + p30 * sy0.w + p40 * sy1.x + p50 * sy1.y;
+	float v1 = p01 * sy0.x + p11 * sy0.y + p21 * sy0.z + p31 * sy0.w + p41 * sy1.x + p51 * sy1.y;
+	float v2 = p02 * sy0.x + p12 * sy0.y + p22 * sy0.z + p32 * sy0.w + p42 * sy1.x + p52 * sy1.y;
+	float v3 = p03 * sy0.x + p13 * sy0.y + p23 * sy0.z + p33 * sy0.w + p43 * sy1.x + p53 * sy1.y;
+	float v4 = p04 * sy0.x + p14 * sy0.y + p24 * sy0.z + p34 * sy0.w + p44 * sy1.x + p54 * sy1.y;
+	float v5 = p05 * sy0.x + p15 * sy0.y + p25 * sy0.z + p35 * sy0.w + p45 * sy1.x + p55 * sy1.y;
+	float normal_y = v0 * sx0.x + v1 * sx0.y + v2 * sx0.z + v3 * sx0.w + v4 * sx1.x + v5 * sx1.y;
+
+	float dir_y = 0.0;
+
+	if (w.x > 0.0) {
+		// 0 Grad: horizontal zwischen Spalte 2 und 3 mischen, vertikal filtern
+		float h0 = lerp(p02, p03, fx);
+		float h1 = lerp(p12, p13, fx);
+		float h2 = lerp(p22, p23, fx);
+		float h3 = lerp(p32, p33, fx);
+		float h4 = lerp(p42, p43, fx);
+		float h5 = lerp(p52, p53, fx);
+		dir_y += EvalPoly6(h0, h1, h2, h3, h4, h5, fy_int) * w.x;
+	}
+
+	if (w.y > 0.0) {
+		// 90 Grad: vertikal zwischen Zeile 2 und 3 mischen, horizontal filtern
+		float k0 = lerp(p20, p30, fy);
+		float k1 = lerp(p21, p31, fy);
+		float k2 = lerp(p22, p32, fy);
+		float k3 = lerp(p23, p33, fy);
+		float k4 = lerp(p24, p34, fy);
+		float k5 = lerp(p25, p35, fy);
+		dir_y += EvalPoly6(k0, k1, k2, k3, k4, k5, fx_int) * w.y;
+	}
+
+	if (w.z > 0.0) {
+		// 45 Grad
+		float pb45 = 0.5 + 0.5 * (fx - fy);
+		float t45_1 = lerp(p21, p12, pb45);
+		float t45_3 = lerp(p32, p23, pb45);
+		float t45_5 = lerp(p43, p34, pb45);
+		float pb45s = pb45 - 0.5;
+		float sa45 = p20;
+		float sb45 = p31;
+		float sc45 = p42;
+		float sd45 = p53;
+		if (pb45s >= 0.0) {
+			sa45 = p02;
+			sb45 = p13;
+			sc45 = p24;
+			sd45 = p35;
+		}
+		float t45_0 = lerp(p11, sa45, abs(pb45s));
+		float t45_2 = lerp(p22, sb45, abs(pb45s));
+		float t45_4 = lerp(p33, sc45, abs(pb45s));
+		float t45_6 = lerp(p44, sd45, abs(pb45s));
+
+		float pp45 = fx + fy;
+		float i45_0 = t45_0;
+		float i45_1 = t45_1;
+		float i45_2 = t45_2;
+		float i45_3 = t45_3;
+		float i45_4 = t45_4;
+		float i45_5 = t45_5;
+		if (pp45 >= 1.0) {
+			i45_0 = t45_1;
+			i45_1 = t45_2;
+			i45_2 = t45_3;
+			i45_3 = t45_4;
+			i45_4 = t45_5;
+			i45_5 = t45_6;
+			pp45 = pp45 - 1.0;
+		}
+		dir_y += EvalPoly6(i45_0, i45_1, i45_2, i45_3, i45_4, i45_5, min(floor(pp45 * 64.0), 63.0)) * w.z;
+	}
+
+	if (w.w > 0.0) {
+		// 135 Grad
+		float pb135 = 0.5 * (fx + fy);
+		float t135_1 = lerp(p31, p42, pb135);
+		float t135_3 = lerp(p22, p33, pb135);
+		float t135_5 = lerp(p13, p24, pb135);
+		float pb135s = pb135 - 0.5;
+		float sa135 = p30;
+		float sb135 = p21;
+		float sc135 = p12;
+		float sd135 = p03;
+		if (pb135s >= 0.0) {
+			sa135 = p52;
+			sb135 = p43;
+			sc135 = p34;
+			sd135 = p25;
+		}
+		float t135_0 = lerp(p41, sa135, abs(pb135s));
+		float t135_2 = lerp(p32, sb135, abs(pb135s));
+		float t135_4 = lerp(p23, sc135, abs(pb135s));
+		float t135_6 = lerp(p14, sd135, abs(pb135s));
+
+		float pp135 = 1.0 + (fx - fy);
+		float i135_0 = t135_0;
+		float i135_1 = t135_1;
+		float i135_2 = t135_2;
+		float i135_3 = t135_3;
+		float i135_4 = t135_4;
+		float i135_5 = t135_5;
+		if (pp135 >= 1.0) {
+			i135_0 = t135_1;
+			i135_1 = t135_2;
+			i135_2 = t135_3;
+			i135_3 = t135_4;
+			i135_4 = t135_5;
+			i135_5 = t135_6;
+			pp135 = pp135 - 1.0;
+		}
+		dir_y += EvalPoly6(i135_0, i135_1, i135_2, i135_3, i135_4, i135_5, min(floor(pp135 * 64.0), 63.0)) * w.w;
+	}
+
+	// Endhelligkeit: gewichtete Summe aus normalem und gerichtetem Filter
+	float base_weight = 1.0 - w.x - w.y - w.z - w.w;
+	float op_y = normal_y * base_weight + dir_y;
+
+	// Farbe: bilinear zwischen den vier Quellpixeln um die Abtastposition (von Hand,
+	// entspricht dem Linear-Clamp-Zugriff des Originals), dann Helligkeit angleichen
+	float3 c00 = RgbAt(srcfloor);
+	float3 c01 = RgbAt(srcfloor + float2(1.0, 0.0));
+	float3 c10 = RgbAt(srcfloor + float2(0.0, 1.0));
+	float3 c11 = RgbAt(srcfloor + float2(1.0, 1.0));
+	float3 rgb = lerp(lerp(c00, c01, fx), lerp(c10, c11, fx), fy);
+	float y_now = LumaOf(rgb);
+	float corr = op_y - y_now;
+	rgb = saturate(rgb + float3(corr, corr, corr));
+	return float4(rgb, 1.0);
+}
+
+technique NIS
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSNis(v_in);
+	}
+}

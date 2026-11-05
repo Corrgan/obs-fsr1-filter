@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="addon">
+  <id>com.obsproject.Studio.Plugin.Fsr1Filter</id>
+  <extends>com.obsproject.Studio</extends>
+  <name>FSR 1 Upscale Filter</name>
+  <summary>Video filter that upscales sources with AMD FidelityFX Super Resolution 1.0</summary>
+  <description>
+    <p>Adds a video filter named "FSR 1 Upscale" to OBS Studio. It upscales a source,
+    for example a webcam or a low-resolution capture card, to a higher resolution
+    using the FSR 1 algorithm (edge-adaptive upsampling followed by contrast-adaptive
+    sharpening), with an optional noise-aware sharpening mode.</p>
+  </description>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-2.0-or-later</project_license>
+  <developer_name>obs-fsr1-filter contributors</developer_name>
+  <releases>
+    <release version="0.1.0" date="2026-11-05"/>
+  </releases>
+</component>

@@ -1,0 +1,44 @@
+{
+    "id": "com.obsproject.Studio.Plugin.Fsr1Filter",
+    "branch": "stable",
+    "runtime": "com.obsproject.Studio",
+    "runtime-version": "stable",
+    "sdk": "org.freedesktop.Sdk//26.08",
+    "build-extension": true,
+    "separate-locales": false,
+    "appstream-compose": false,
+    "build-options": {
+        "prefix": "/app/plugins/Fsr1Filter",
+        "prepend-pkg-config-path": "/app/plugins/Fsr1Filter/lib/pkgconfig"
+    },
+    "modules": [
+        {
+            "name": "obs-fsr1-filter",
+            "buildsystem": "cmake-ninja",
+            "builddir": true,
+            "config-opts": [
+                "-DCMAKE_BUILD_TYPE=Release",
+                "-DCMAKE_INSTALL_PREFIX=/app/plugins/Fsr1Filter"
+            ],
+            "sources": [
+                {
+                    "type": "dir",
+                    "path": ".."
+                }
+            ]
+        },
+        {
+            "name": "metainfo",
+            "buildsystem": "simple",
+            "build-commands": [
+                "install -Dm644 com.obsproject.Studio.Plugin.Fsr1Filter.metainfo.xml -t /app/plugins/Fsr1Filter/share/metainfo"
+            ],
+            "sources": [
+                {
+                    "type": "file",
+                    "path": "com.obsproject.Studio.Plugin.Fsr1Filter.metainfo.xml"
+                }
+            ]
+        }
+    ]
+}
