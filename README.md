@@ -1,10 +1,11 @@
 # obs-fsr1-filter
 
-Videofilter für OBS Studio, der ein Bild hochskaliert. Zwei Algorithmen stehen zur Wahl:
-**AMD FidelityFX Super Resolution 1.0** (EASU + RCAS) und **NVIDIA Image Scaling (NIS)**.
-Gedacht für Webcams.
+Videofilter für OBS Studio, der ein Bild hochskaliert. Drei Algorithmen stehen zur Wahl:
+**AMD FidelityFX Super Resolution 1.0** (EASU + RCAS), **NVIDIA Image Scaling (NIS)** und
+**RAVU-Zoom-AR** (aus den mpv-prescalers). Gedacht für Webcams. Alle drei sind reine Shader
+und laufen auf jeder Grafikkarte, die OBS unterstützt (NVIDIA, AMD, Intel).
 
-Der Filter heißt in OBS **„Hochskalierung (FSR 1 / NIS)"**. Bestehende Szenen mit dem
+Der Filter heißt in OBS **„Hochskalierung (FSR 1 / NIS / RAVU)"**. Bestehende Szenen mit dem
 alten FSR-Filter funktionieren weiter (die Filter-ID ist unverändert).
 
 ## Wie es funktioniert
@@ -25,7 +26,7 @@ KI-Hochskalierung.
 
 | Einstellung | Bedeutung |
 |---|---|
-| Algorithmus | FSR 1 (Standard) oder NIS |
+| Algorithmus | FSR 1 (Standard), NIS oder RAVU-Zoom-AR |
 | Skalierungsfaktor | 1,0–4,0 (Standard 1,5, passend für 720p → 1080p) |
 | Feste Ausgabegröße verwenden | statt Faktor eine feste Breite × Höhe |
 | Schärfe (%) | nur FSR 1: RCAS-Stärke, Standard 80 % |
@@ -43,6 +44,23 @@ KI-Hochskalierung.
   geprüft, der Shader gegen die bekannten OBS-Parser-Stolpersteine durchgesehen, mehr nicht.
 - Der Shader und die Koeffiziententabellen entstehen aus Generatoren in `tools/`
   (`gen_nis_effect.py`, `extract_nis_coefs.py`); nicht von Hand ändern.
+
+### RAVU-Zoom-AR: Status und Grenzen
+
+- RAVU ist ein kleiner, vorab trainierter Upscaler: Für jede Kantenrichtung, -stärke und
+  -schärfe hat er gelernte Filtergewichte (zwei Tabellen in `data/ravu/`). Er vergrößert in
+  **beliebigem Verhältnis** (z. B. 1080p → 1440p) und begrenzt Überschwinger an harten Kanten
+  („AR" = Anti-Ringing). Es gibt keine Regler.
+- Nur echte Vergrößerungen: Ist die Zielgröße auf einer Achse nicht größer als die Quelle,
+  nutzt der Filter FSR 1 und schreibt einen Hinweis ins Log.
+- Lädt der Shader oder eine der Tabellen nicht, steht der Grund im OBS-Log und FSR 1 läuft
+  weiter.
+- Der Shader entsteht mit `tools/gen_ravu.py` aus dem Original `ravu-zoom-ar-r3-rgb.hook`.
+  Der Generator übersetzt Zeile für Zeile und bricht bei allem ab, was er nicht kennt.
+- **Geprüft:** In einem Software-WebGL-Test liefern Original und Übersetzung auf einem
+  Testbild (Kanten, Verläufe, Rauschen, weiße und schwarze Flächen) bei 1,33×, 1,5× und 2×
+  dieselben Pixel (Abweichung < 0,00005). **Nicht geprüft:** der Lauf in OBS selbst.
+- Rechenaufwand ähnlich NIS (36 Bildpunkte plus 14 Tabellenzugriffe pro Ausgabepixel).
 
 Tipp: Passt die Leinwand nicht zu einem glatten Faktor (z. B. 1080p-Kamera, 1440p-Leinwand),
 „Feste Ausgabegröße verwenden" aktivieren und die Leinwandgröße eintragen (2560 × 1440).
@@ -137,8 +155,11 @@ HLSL-/GLSL-Compiler:
   Parameterliste (Fehler „Expected identifier"). Konstanten direkt hinschreiben.
 - **Keine Exponenten-Literale** wie `1.0e-8`, stattdessen `0.00000001`.
 - **Kein ternärer Operator.** `if`/`else` verwenden.
-- **Nichts davon gilt nur für FSR:** `nis.effect` folgt denselben Regeln und ist eine eigene
-  Datei, damit ein Shaderfehler dort FSR nicht mitreißt.
+- **Nichts davon gilt nur für FSR:** `nis.effect` und `ravu.effect` folgen denselben Regeln
+  und sind eigene Dateien, damit ein Shaderfehler dort FSR nicht mitreißt. `gen_ravu.py`
+  prüft die Regeln beim Erzeugen maschinell.
+- **Keine Matrizen oder Arrays.** Das Original von RAVU nutzt `mat4x3`/`matrixCompMult`;
+  die Übersetzung rechnet stattdessen mit einzelnen `float3`-Werten.
 - Statt Gather4 werden einzelne Punkt-Abtastungen verwendet (läuft auf allen Backends).
 
 ## Lizenz
@@ -148,3 +169,7 @@ Drittanbieter-Shader stehen in `THIRD_PARTY_NOTICES.txt` und werden mit installi
 Die Shader basieren auf AMDs `ffx_fsr1.h`
 (MIT-Lizenz, Copyright © 2021 Advanced Micro Devices, Inc.) und NVIDIAs NIS
 (`NIS_Scaler.h`, `NIS_Config.h`; MIT-Lizenz, Copyright © 2022 NVIDIA Corporation & Affiliates).
+
+Ausnahme: Die RAVU-Dateien (`data/effects/ravu.effect`, `data/ravu/*.bin`) sind aus RAVU von
+Bin Jin übersetzt und stehen wie das Original unter **LGPL-3.0-or-later**
+(Volltexte in `LICENSES/`).

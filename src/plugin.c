@@ -2,23 +2,28 @@
  * obs-fsr1-filter
  *
  * Videofilter für OBS Studio zum Hochskalieren von Webcams und Capture-Karten
- * mit niedriger Auflösung. Zwei Algorithmen stehen zur Wahl:
+ * mit niedriger Auflösung. Drei Algorithmen stehen zur Wahl:
  *
  *   - AMD FidelityFX Super Resolution 1.0 (EASU + RCAS), data/effects/fsr1.effect
  *   - NVIDIA Image Scaling (NVScaler),                  data/effects/nis.effect
+ *   - RAVU-Zoom-AR (r3, aus mpv-prescalers),            data/effects/ravu.effect
+ *                                                       + Gewichtstabellen in data/ravu/
  *
- * Jeder Algorithmus liegt in einer eigenen Effect-Datei. Schlägt das Laden von NIS fehl,
- * bleibt FSR 1 voll nutzbar (der Filter fällt dann darauf zurück).
+ * Jeder Algorithmus liegt in einer eigenen Effect-Datei. Schlägt das Laden von NIS oder
+ * RAVU fehl, bleibt FSR 1 voll nutzbar (der Filter fällt dann darauf zurück).
  *
- * Lizenz: GPL-2.0-or-later (wie libobs). Die Shader basieren auf AMDs ffx_fsr1.h (MIT)
- * und NVIDIAs NIS_Scaler.h (MIT).
+ * Lizenz: GPL-2.0-or-later (wie libobs). Die Shader basieren auf AMDs ffx_fsr1.h (MIT),
+ * NVIDIAs NIS_Scaler.h (MIT) und RAVU von Bin Jin (LGPL-3.0-or-later).
+ * Siehe THIRD_PARTY_NOTICES.txt.
  */
 
 #include <obs-module.h>
 #include <graphics/graphics.h>
 #include <graphics/vec2.h>
 #include <graphics/vec4.h>
+#include <util/platform.h>
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "nis_coef.h"
@@ -40,10 +45,12 @@ OBS_MODULE_USE_DEFAULT_LOCALE("obs-fsr1-filter", "en-US")
 
 #define V_ALGO_FSR1 "fsr1"
 #define V_ALGO_NIS "nis"
+#define V_ALGO_RAVU "ravu"
 
 #define T_ALGO obs_module_text("Algorithm")
 #define T_ALGO_FSR1 obs_module_text("AlgoFSR1")
 #define T_ALGO_NIS obs_module_text("AlgoNIS")
+#define T_ALGO_RAVU obs_module_text("AlgoRAVU")
 #define T_FACTOR obs_module_text("Factor")
 #define T_CUSTOM obs_module_text("CustomSize")
 #define T_WIDTH obs_module_text("Width")
@@ -54,9 +61,18 @@ OBS_MODULE_USE_DEFAULT_LOCALE("obs-fsr1-filter", "en-US")
 
 #define MAX_OUTPUT_DIMENSION 8192
 
+/* Gewichtstabellen von RAVU-Zoom-AR r3 (RGBA16F), erzeugt von tools/gen_ravu.py */
+#define RAVU_LUT_FILE "ravu/lut_45x2592.bin"
+#define RAVU_LUT_W 45
+#define RAVU_LUT_H 2592
+#define RAVU_LUT_AR_FILE "ravu/lut_ar_18x2592.bin"
+#define RAVU_LUT_AR_W 18
+#define RAVU_LUT_AR_H 2592
+
 enum algorithm {
 	ALGO_FSR1,
 	ALGO_NIS,
+	ALGO_RAVU,
 };
 
 struct fsr1_filter {
@@ -81,6 +97,14 @@ struct fsr1_filter {
 	gs_eparam_t *n_sharp2;
 	gs_texture_t *nis_coef_tex;
 
+	/* RAVU-Zoom-AR (optional) */
+	gs_effect_t *ravu_effect;
+	gs_eparam_t *r_input_size;
+	gs_eparam_t *r_lut;
+	gs_eparam_t *r_lut_ar;
+	gs_texture_t *ravu_lut_tex;
+	gs_texture_t *ravu_lut_ar_tex;
+
 	/* Einstellungen */
 	enum algorithm algo;
 	double factor;
@@ -96,12 +120,14 @@ struct fsr1_filter {
 	uint32_t in_h;
 	uint32_t out_w;
 	uint32_t out_h;
-	bool use_nis;
+	enum algorithm active; /* tatsächlich verwendeter Algorithmus (nach Rückfall) */
 	bool valid;
 
 	/* Hinweise nur einmal ins Log schreiben */
 	bool warned_no_nis;
 	bool warned_nis_range;
+	bool warned_no_ravu;
+	bool warned_ravu_range;
 };
 
 static const char *fsr1_get_name(void *unused)
@@ -115,7 +141,12 @@ static void fsr1_update(void *data, obs_data_t *settings)
 	struct fsr1_filter *f = data;
 
 	const char *algo = obs_data_get_string(settings, S_ALGO);
-	f->algo = (algo && strcmp(algo, V_ALGO_NIS) == 0) ? ALGO_NIS : ALGO_FSR1;
+	if (algo && strcmp(algo, V_ALGO_NIS) == 0)
+		f->algo = ALGO_NIS;
+	else if (algo && strcmp(algo, V_ALGO_RAVU) == 0)
+		f->algo = ALGO_RAVU;
+	else
+		f->algo = ALGO_FSR1;
 
 	f->factor = obs_data_get_double(settings, S_FACTOR);
 	f->custom_size = obs_data_get_bool(settings, S_CUSTOM);
@@ -135,6 +166,9 @@ static void fsr1_destroy(void *data)
 	gs_effect_destroy(f->effect);
 	gs_effect_destroy(f->nis_effect);
 	gs_texture_destroy(f->nis_coef_tex);
+	gs_effect_destroy(f->ravu_effect);
+	gs_texture_destroy(f->ravu_lut_tex);
+	gs_texture_destroy(f->ravu_lut_ar_tex);
 	obs_leave_graphics();
 
 	bfree(f);
@@ -183,6 +217,70 @@ static gs_texture_t *create_nis_coef_texture(void)
 	return gs_texture_create(4, 64, GS_RGBA32F, 1, levels, 0);
 }
 
+/*
+ * Lädt eine RAVU-Gewichtstabelle (rohe RGBA16F-Daten, w x h Texel) aus dem
+ * Datenordner und legt sie als Textur an. Die Dateigröße muss exakt stimmen.
+ * Muss im Grafikkontext aufgerufen werden.
+ */
+static gs_texture_t *load_lut_texture(const char *name, uint32_t w, uint32_t h)
+{
+	const size_t expected = (size_t)w * h * 4 * 2;
+	gs_texture_t *tex = NULL;
+	uint8_t *buf = NULL;
+	FILE *fp = NULL;
+
+	char *path = obs_module_file(name);
+	if (!path) {
+		blog(LOG_ERROR, "[obs-fsr1-filter] %s nicht im Datenordner des Plugins gefunden", name);
+		return NULL;
+	}
+
+	fp = os_fopen(path, "rb");
+	if (!fp) {
+		blog(LOG_ERROR, "[obs-fsr1-filter] Konnte %s nicht öffnen", path);
+		goto out;
+	}
+
+	buf = bmalloc(expected + 1);
+	size_t got = fread(buf, 1, expected + 1, fp);
+	if (got != expected) {
+		blog(LOG_ERROR, "[obs-fsr1-filter] %s hat die falsche Größe (%zu statt %zu Bytes)", path, got,
+		     expected);
+		goto out;
+	}
+
+	const uint8_t *levels[1] = {buf};
+	tex = gs_texture_create(w, h, GS_RGBA16F, 1, levels, 0);
+	if (!tex)
+		blog(LOG_ERROR, "[obs-fsr1-filter] Konnte Textur aus %s nicht erzeugen", path);
+
+out:
+	if (fp)
+		fclose(fp);
+	bfree(buf);
+	bfree(path);
+	return tex;
+}
+
+/* RAVU laden; bei jedem Fehler bleibt alles NULL und der Filter nutzt FSR 1. */
+static void load_ravu(struct fsr1_filter *f)
+{
+	f->ravu_effect = load_effect("effects/ravu.effect");
+	if (!f->ravu_effect)
+		return;
+
+	f->ravu_lut_tex = load_lut_texture(RAVU_LUT_FILE, RAVU_LUT_W, RAVU_LUT_H);
+	f->ravu_lut_ar_tex = load_lut_texture(RAVU_LUT_AR_FILE, RAVU_LUT_AR_W, RAVU_LUT_AR_H);
+	if (!f->ravu_lut_tex || !f->ravu_lut_ar_tex) {
+		gs_effect_destroy(f->ravu_effect);
+		gs_texture_destroy(f->ravu_lut_tex);
+		gs_texture_destroy(f->ravu_lut_ar_tex);
+		f->ravu_effect = NULL;
+		f->ravu_lut_tex = NULL;
+		f->ravu_lut_ar_tex = NULL;
+	}
+}
+
 static void *fsr1_create(obs_data_t *settings, obs_source_t *context)
 {
 	struct fsr1_filter *f = bzalloc(sizeof(struct fsr1_filter));
@@ -206,6 +304,9 @@ static void *fsr1_create(obs_data_t *settings, obs_source_t *context)
 		}
 	}
 
+	/* RAVU ist ebenfalls optional. */
+	load_ravu(f);
+
 	obs_leave_graphics();
 
 	if (!f->effect) {
@@ -228,6 +329,12 @@ static void *fsr1_create(obs_data_t *settings, obs_source_t *context)
 		f->n_sharp2 = gs_effect_get_param_by_name(f->nis_effect, "nis_sharp2");
 	}
 
+	if (f->ravu_effect) {
+		f->r_input_size = gs_effect_get_param_by_name(f->ravu_effect, "input_size");
+		f->r_lut = gs_effect_get_param_by_name(f->ravu_effect, "lut");
+		f->r_lut_ar = gs_effect_get_param_by_name(f->ravu_effect, "lut_ar");
+	}
+
 	fsr1_update(f, settings);
 	return f;
 }
@@ -247,7 +354,7 @@ static void fsr1_tick(void *data, float seconds)
 	struct fsr1_filter *f = data;
 
 	f->valid = false;
-	f->use_nis = false;
+	f->active = ALGO_FSR1;
 	f->in_w = f->in_h = 0;
 	f->out_w = f->out_h = 0;
 
@@ -287,7 +394,7 @@ static void fsr1_tick(void *data, float seconds)
 			bool in_range = rx >= 0.5 && rx <= 1.0 && ry >= 0.5 && ry <= 1.0;
 
 			if (in_range) {
-				f->use_nis = true;
+				f->active = ALGO_NIS;
 				f->warned_nis_range = false;
 			} else if (!f->warned_nis_range) {
 				blog(LOG_WARNING,
@@ -296,6 +403,25 @@ static void fsr1_tick(void *data, float seconds)
 				     f->in_w, f->in_h, f->out_w, f->out_h);
 				f->warned_nis_range = true;
 			}
+		}
+	}
+
+	if (f->algo == ALGO_RAVU) {
+		if (!f->ravu_effect) {
+			if (!f->warned_no_ravu) {
+				blog(LOG_WARNING, "[obs-fsr1-filter] RAVU nicht verfügbar, verwende FSR 1");
+				f->warned_no_ravu = true;
+			}
+		} else if (f->out_w > f->in_w && f->out_h > f->in_h) {
+			/* RAVU-Zoom vergrößert in beliebigem Verhältnis, aber nur echte
+			 * Vergrößerungen auf beiden Achsen (wie im Original). */
+			f->active = ALGO_RAVU;
+			f->warned_ravu_range = false;
+		} else if (!f->warned_ravu_range) {
+			blog(LOG_WARNING,
+			     "[obs-fsr1-filter] RAVU vergrößert nur (%ux%u -> %ux%u), verwende FSR 1", f->in_w,
+			     f->in_h, f->out_w, f->out_h);
+			f->warned_ravu_range = true;
 		}
 	}
 }
@@ -468,6 +594,33 @@ static void render_nis(struct fsr1_filter *f)
 	gs_blend_state_pop();
 }
 
+/* ---------------------------------------------------------------------- */
+/* RAVU-Zoom-AR: ein Pass, Gewichte aus zwei linear gefilterten Tabellen    */
+/* ---------------------------------------------------------------------- */
+static void render_ravu(struct fsr1_filter *f)
+{
+	struct vec2 in_size;
+	vec2_set(&in_size, (float)f->in_w, (float)f->in_h);
+
+	if (!obs_source_process_filter_begin_with_color_space(f->context, GS_RGBA, GS_CS_SRGB,
+							      OBS_NO_DIRECT_RENDERING))
+		return; /* OBS hat den Filter bereits übersprungen */
+
+	if (f->r_input_size)
+		gs_effect_set_vec2(f->r_input_size, &in_size);
+	if (f->r_lut)
+		gs_effect_set_texture(f->r_lut, f->ravu_lut_tex);
+	if (f->r_lut_ar)
+		gs_effect_set_texture(f->r_lut_ar, f->ravu_lut_ar_tex);
+
+	gs_blend_state_push();
+	gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+
+	obs_source_process_filter_tech_end(f->context, f->ravu_effect, f->out_w, f->out_h, "RAVU");
+
+	gs_blend_state_pop();
+}
+
 static void fsr1_render(void *data, gs_effect_t *effect)
 {
 	UNUSED_PARAMETER(effect);
@@ -478,10 +631,18 @@ static void fsr1_render(void *data, gs_effect_t *effect)
 		return;
 	}
 
-	if (f->use_nis)
+	switch (f->active) {
+	case ALGO_NIS:
 		render_nis(f);
-	else
+		break;
+	case ALGO_RAVU:
+		render_ravu(f);
+		break;
+	case ALGO_FSR1:
+	default:
 		render_fsr1(f);
+		break;
+	}
 }
 
 /* Sichtbarkeit der Einstellungen je nach Algorithmus und Größenmodus */
@@ -489,14 +650,17 @@ static void apply_visibility(obs_properties_t *props, obs_data_t *settings)
 {
 	const char *algo = obs_data_get_string(settings, S_ALGO);
 	const bool nis = algo && strcmp(algo, V_ALGO_NIS) == 0;
+	const bool ravu = algo && strcmp(algo, V_ALGO_RAVU) == 0;
+	const bool fsr = !nis && !ravu;
 	const bool custom = obs_data_get_bool(settings, S_CUSTOM);
 
 	obs_property_set_visible(obs_properties_get(props, S_FACTOR), !custom);
 	obs_property_set_visible(obs_properties_get(props, S_WIDTH), custom);
 	obs_property_set_visible(obs_properties_get(props, S_HEIGHT), custom);
 
-	obs_property_set_visible(obs_properties_get(props, S_SHARPNESS), !nis);
-	obs_property_set_visible(obs_properties_get(props, S_DENOISE), !nis);
+	/* RAVU hat keine eigenen Regler (Schärfe steckt in den trainierten Gewichten). */
+	obs_property_set_visible(obs_properties_get(props, S_SHARPNESS), fsr);
+	obs_property_set_visible(obs_properties_get(props, S_DENOISE), fsr);
 	obs_property_set_visible(obs_properties_get(props, S_NIS_SHARPNESS), nis);
 }
 
@@ -516,6 +680,7 @@ static obs_properties_t *fsr1_properties(void *data)
 	p = obs_properties_add_list(props, S_ALGO, T_ALGO, OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 	obs_property_list_add_string(p, T_ALGO_FSR1, V_ALGO_FSR1);
 	obs_property_list_add_string(p, T_ALGO_NIS, V_ALGO_NIS);
+	obs_property_list_add_string(p, T_ALGO_RAVU, V_ALGO_RAVU);
 	obs_property_set_modified_callback(p, settings_modified);
 
 	p = obs_properties_add_bool(props, S_CUSTOM, T_CUSTOM);
@@ -559,7 +724,7 @@ static uint32_t fsr1_get_height(void *data)
 
 /*
  * Bewusst ohne OBS_SOURCE_SRGB: OBS rendert den Filter dann im Gamma-Raum,
- * den FSR 1 und NIS erwarten (Eingabe und Ausgabe perceptual, nicht linear).
+ * den FSR 1, NIS und RAVU erwarten (Eingabe und Ausgabe perceptual, nicht linear).
  */
 static struct obs_source_info fsr1_filter_info = {
 	.id = FILTER_ID,
@@ -590,10 +755,10 @@ void obs_module_unload(void)
 
 const char *obs_module_name(void)
 {
-	return "FSR 1 / NIS Upscale Filter";
+	return "FSR 1 / NIS / RAVU Upscale Filter";
 }
 
 const char *obs_module_description(void)
 {
-	return "Hochskalierungsfilter mit AMD FidelityFX Super Resolution 1.0 und NVIDIA Image Scaling";
+	return "Hochskalierungsfilter mit AMD FidelityFX Super Resolution 1.0, NVIDIA Image Scaling und RAVU-Zoom-AR";
 }

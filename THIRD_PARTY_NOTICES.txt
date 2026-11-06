@@ -58,3 +58,29 @@ FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.IN NO EVENT SHALL THE AUTHORS OR
 COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+-----------------------------------------------------------------------------
+RAVU (RAVU-Zoom-AR r3, RGB) aus mpv-prescalers von Bin Jin
+https://github.com/bjin/mpv-prescalers
+Verwendet in: data/effects/ravu.effect, data/ravu/lut_45x2592.bin,
+              data/ravu/lut_ar_18x2592.bin (erzeugt mit tools/gen_ravu.py)
+-----------------------------------------------------------------------------
+
+Diese Dateien sind aus dem Original übersetzt bzw. enthalten dessen trainierte
+Gewichte und stehen wie das Original unter der GNU Lesser General Public License,
+Version 3 oder (nach Wahl) einer späteren Version:
+
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU Lesser General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU Lesser General Public License for more details.
+
+Volltexte: LICENSES/LGPL-3.0.txt und LICENSES/GPL-3.0.txt (die LGPL-3.0 baut auf
+der GPL-3.0 auf). Die Originaldateien lassen sich mit tools/gen_ravu.py aus
+ravu-zoom-ar-r3-rgb.hook jederzeit neu erzeugen.

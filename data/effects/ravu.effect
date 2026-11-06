@@ -1,0 +1,338 @@
+// RAVU-Zoom-AR (rgb, r3) für OBS Studio
+// GENERIERT von tools/gen_ravu.py - nicht von Hand ändern.
+// Original: RAVU aus https://github.com/bjin/mpv-prescalers
+// Autor des Originals: Bin Jin. Lizenz: LGPL-3.0-or-later, siehe THIRD_PARTY_NOTICES.txt.
+//
+// Skaliert in beliebigem Verhältnis hoch. Die Gewichte stehen in zwei Tabellen-
+// texturen (RGBA16F), die das Plugin aus data/ravu/*.bin lädt und linear filtert.
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform texture2d lut;       // Gewichte des Skalierers
+uniform texture2d lut_ar;    // Gewichte des Anti-Ringing
+uniform float2 input_size;   // Quellgröße in Pixeln
+
+sampler_state point_clamp {
+	Filter    = Point;
+	AddressU  = Clamp;
+	AddressV  = Clamp;
+};
+
+sampler_state linear_clamp {
+	Filter    = Linear;
+	AddressU  = Clamp;
+	AddressV  = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v_in)
+{
+	VertData vert_out;
+	vert_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+	vert_out.uv  = v_in.uv;
+	return vert_out;
+}
+
+// Bildpunkt an einer Pixelmitte (pos ist bereits die Mitte in Pixeln)
+float3 Fetch(float2 p)
+{
+	return image.Sample(point_clamp, p / input_size).rgb;
+}
+
+// Anti-Ringing-Beitrag eines Bildpunkts (im Original als mat4x3/matrixCompMult):
+// hi/lo sammeln (0.1 + s)^32 bzw. (1.1 - s)^32, hi2/lo2 die nächsthöhere Potenz.
+void ArAcc(inout float3 hi, inout float3 lo, inout float3 hi2, inout float3 lo2, float3 s, float wt)
+{
+	float3 c_hi = float3(0.1, 0.1, 0.1) + s;
+	float3 c_lo = float3(1.1, 1.1, 1.1) - s;
+	float3 p_hi = c_hi;
+	float3 p_lo = c_lo;
+	p_hi = p_hi * p_hi;
+	p_lo = p_lo * p_lo;
+	p_hi = p_hi * p_hi;
+	p_lo = p_lo * p_lo;
+	p_hi = p_hi * p_hi;
+	p_lo = p_lo * p_lo;
+	p_hi = p_hi * p_hi;
+	p_lo = p_lo * p_lo;
+	p_hi = p_hi * p_hi;
+	p_lo = p_lo * p_lo;
+	hi += p_hi * wt;
+	lo += p_lo * wt;
+	hi2 += p_hi * c_hi * wt;
+	lo2 += p_lo * c_lo * wt;
+}
+
+float4 PSRavu(VertData v_in) : TARGET
+{
+	// Position im Quellbild (in Pixeln), auf Pixelmitte gerundet
+	float2 pos = v_in.uv * input_size;
+	float2 subpix = frac(pos - 0.5);
+	pos -= subpix;
+	// LUTPOS: Phase auf die Texelmitten der Tabelle abbilden
+	subpix = lerp(float2(0.5 / 9.0, 0.5 / 9.0), float2(1.0 - 0.5 / 9.0, 1.0 - 0.5 / 9.0), subpix);
+	float2 subpix_inv = float2(1.0, 1.0) - subpix;
+	float2 subpix_ar = subpix / float2(2.0, 288.0);
+	float2 subpix_inv_ar = subpix_inv / float2(2.0, 288.0);
+	subpix /= float2(5.0, 288.0);
+	subpix_inv /= float2(5.0, 288.0);
+
+	// 6x6 Bildpunkte (RGB)
+	float3 sample0 = Fetch(pos + float2(-2.0, -2.0));
+	float3 sample1 = Fetch(pos + float2(-2.0, -1.0));
+	float3 sample2 = Fetch(pos + float2(-2.0, 0.0));
+	float3 sample3 = Fetch(pos + float2(-2.0, 1.0));
+	float3 sample4 = Fetch(pos + float2(-2.0, 2.0));
+	float3 sample5 = Fetch(pos + float2(-2.0, 3.0));
+	float3 sample6 = Fetch(pos + float2(-1.0, -2.0));
+	float3 sample7 = Fetch(pos + float2(-1.0, -1.0));
+	float3 sample8 = Fetch(pos + float2(-1.0, 0.0));
+	float3 sample9 = Fetch(pos + float2(-1.0, 1.0));
+	float3 sample10 = Fetch(pos + float2(-1.0, 2.0));
+	float3 sample11 = Fetch(pos + float2(-1.0, 3.0));
+	float3 sample12 = Fetch(pos + float2(0.0, -2.0));
+	float3 sample13 = Fetch(pos + float2(0.0, -1.0));
+	float3 sample14 = Fetch(pos + float2(0.0, 0.0));
+	float3 sample15 = Fetch(pos + float2(0.0, 1.0));
+	float3 sample16 = Fetch(pos + float2(0.0, 2.0));
+	float3 sample17 = Fetch(pos + float2(0.0, 3.0));
+	float3 sample18 = Fetch(pos + float2(1.0, -2.0));
+	float3 sample19 = Fetch(pos + float2(1.0, -1.0));
+	float3 sample20 = Fetch(pos + float2(1.0, 0.0));
+	float3 sample21 = Fetch(pos + float2(1.0, 1.0));
+	float3 sample22 = Fetch(pos + float2(1.0, 2.0));
+	float3 sample23 = Fetch(pos + float2(1.0, 3.0));
+	float3 sample24 = Fetch(pos + float2(2.0, -2.0));
+	float3 sample25 = Fetch(pos + float2(2.0, -1.0));
+	float3 sample26 = Fetch(pos + float2(2.0, 0.0));
+	float3 sample27 = Fetch(pos + float2(2.0, 1.0));
+	float3 sample28 = Fetch(pos + float2(2.0, 2.0));
+	float3 sample29 = Fetch(pos + float2(2.0, 3.0));
+	float3 sample30 = Fetch(pos + float2(3.0, -2.0));
+	float3 sample31 = Fetch(pos + float2(3.0, -1.0));
+	float3 sample32 = Fetch(pos + float2(3.0, 0.0));
+	float3 sample33 = Fetch(pos + float2(3.0, 1.0));
+	float3 sample34 = Fetch(pos + float2(3.0, 2.0));
+	float3 sample35 = Fetch(pos + float2(3.0, 3.0));
+
+	// Helligkeit
+	float3 color_primary = float3(0.2126, 0.7152, 0.0722);
+	float luma1 = dot(sample1, color_primary);
+	float luma2 = dot(sample2, color_primary);
+	float luma3 = dot(sample3, color_primary);
+	float luma4 = dot(sample4, color_primary);
+	float luma6 = dot(sample6, color_primary);
+	float luma7 = dot(sample7, color_primary);
+	float luma8 = dot(sample8, color_primary);
+	float luma9 = dot(sample9, color_primary);
+	float luma10 = dot(sample10, color_primary);
+	float luma11 = dot(sample11, color_primary);
+	float luma12 = dot(sample12, color_primary);
+	float luma13 = dot(sample13, color_primary);
+	float luma14 = dot(sample14, color_primary);
+	float luma15 = dot(sample15, color_primary);
+	float luma16 = dot(sample16, color_primary);
+	float luma17 = dot(sample17, color_primary);
+	float luma18 = dot(sample18, color_primary);
+	float luma19 = dot(sample19, color_primary);
+	float luma20 = dot(sample20, color_primary);
+	float luma21 = dot(sample21, color_primary);
+	float luma22 = dot(sample22, color_primary);
+	float luma23 = dot(sample23, color_primary);
+	float luma24 = dot(sample24, color_primary);
+	float luma25 = dot(sample25, color_primary);
+	float luma26 = dot(sample26, color_primary);
+	float luma27 = dot(sample27, color_primary);
+	float luma28 = dot(sample28, color_primary);
+	float luma29 = dot(sample29, color_primary);
+	float luma31 = dot(sample31, color_primary);
+	float luma32 = dot(sample32, color_primary);
+	float luma33 = dot(sample33, color_primary);
+	float luma34 = dot(sample34, color_primary);
+
+	// Strukturtensor aus den Gradienten (gewichtet)
+	float3 abd = float3(0.0, 0.0, 0.0);
+	float gx;
+	float gy;
+	gx = (luma13-luma1)/2.0;
+	gy = (luma8-luma6)/2.0;
+	abd += float3(gx * gx, gx * gy, gy * gy) * 0.04792235409415088;
+	gx = (luma14-luma2)/2.0;
+	gy = (-luma10+8.0*luma9-8.0*luma7+luma6)/12.0;
+	abd += float3(gx * gx, gx * gy, gy * gy) * 0.06153352068439959;
+	gx = (luma15-luma3)/2.0;
+	gy = (-luma11+8.0*luma10-8.0*luma8+luma7)/12.0;
+	abd += float3(gx * gx, gx * gy, gy * gy) * 0.06153352068439959;
+	gx = (luma16-luma4)/2.0;
+	gy = (luma11-luma9)/2.0;
+	abd += float3(gx * gx, gx * gy, gy * gy) * 0.04792235409415088;
+	gx = (-luma25+8.0*luma19-8.0*luma7+luma1)/12.0;
+	gy = (luma14-luma12)/2.0;
+	abd += float3(gx * gx, gx * gy, gy * gy) * 0.06153352068439959;
+	gx = (-luma26+8.0*luma20-8.0*luma8+luma2)/12.0;
+	gy = (-luma16+8.0*luma15-8.0*luma13+luma12)/12.0;
+	abd += float3(gx * gx, gx * gy, gy * gy) * 0.07901060453704994;
+	gx = (-luma27+8.0*luma21-8.0*luma9+luma3)/12.0;
+	gy = (-luma17+8.0*luma16-8.0*luma14+luma13)/12.0;
+	abd += float3(gx * gx, gx * gy, gy * gy) * 0.07901060453704994;
+	gx = (-luma28+8.0*luma22-8.0*luma10+luma4)/12.0;
+	gy = (luma17-luma15)/2.0;
+	abd += float3(gx * gx, gx * gy, gy * gy) * 0.06153352068439959;
+	gx = (-luma31+8.0*luma25-8.0*luma13+luma7)/12.0;
+	gy = (luma20-luma18)/2.0;
+	abd += float3(gx * gx, gx * gy, gy * gy) * 0.06153352068439959;
+	gx = (-luma32+8.0*luma26-8.0*luma14+luma8)/12.0;
+	gy = (-luma22+8.0*luma21-8.0*luma19+luma18)/12.0;
+	abd += float3(gx * gx, gx * gy, gy * gy) * 0.07901060453704994;
+	gx = (-luma33+8.0*luma27-8.0*luma15+luma9)/12.0;
+	gy = (-luma23+8.0*luma22-8.0*luma20+luma19)/12.0;
+	abd += float3(gx * gx, gx * gy, gy * gy) * 0.07901060453704994;
+	gx = (-luma34+8.0*luma28-8.0*luma16+luma10)/12.0;
+	gy = (luma23-luma21)/2.0;
+	abd += float3(gx * gx, gx * gy, gy * gy) * 0.06153352068439959;
+	gx = (luma31-luma19)/2.0;
+	gy = (luma26-luma24)/2.0;
+	abd += float3(gx * gx, gx * gy, gy * gy) * 0.04792235409415088;
+	gx = (luma32-luma20)/2.0;
+	gy = (-luma28+8.0*luma27-8.0*luma25+luma24)/12.0;
+	abd += float3(gx * gx, gx * gy, gy * gy) * 0.06153352068439959;
+	gx = (luma33-luma21)/2.0;
+	gy = (-luma29+8.0*luma28-8.0*luma26+luma25)/12.0;
+	abd += float3(gx * gx, gx * gy, gy * gy) * 0.06153352068439959;
+	gx = (luma34-luma22)/2.0;
+	gy = (luma29-luma27)/2.0;
+	abd += float3(gx * gx, gx * gy, gy * gy) * 0.04792235409415088;
+
+	// Strukturtensor -> Winkel, Stärke, Kohärenz (Eigenwerte der 2x2-Matrix)
+	float a = abd.x;
+	float b = abd.y;
+	float d = abd.z;
+	float T = a + d;
+	float D = a * d - b * b;
+	float delta = sqrt(max(T * T / 4.0 - D, 0.0));
+	float L1 = T / 2.0 + delta;
+	float L2 = T / 2.0 - delta;
+	float sqrtL1 = sqrt(L1);
+	float sqrtL2 = sqrt(max(L2, 0.0));
+	float theta = 0.0;
+	if (abs(b) >= 0.0000001192092896) {
+		theta = fmod(atan2(L1 - a, b) + 3.141592653589793, 3.141592653589793);
+	}
+	float lambda = sqrtL1;
+	float mu = 0.0;
+	if (sqrtL1 + sqrtL2 >= 0.0000001192092896) {
+		mu = (sqrtL1 - sqrtL2) / (sqrtL1 + sqrtL2);
+	}
+	float angle = min(floor(theta * 24.0 / 3.141592653589793), 23.0);
+	float strength = 0.0;
+	if (lambda >= 0.016) {
+		strength = 2.0;
+		if (lambda >= 0.05) {
+			strength = 3.0;
+		}
+	} else {
+		if (lambda >= 0.004) {
+			strength = 1.0;
+		}
+	}
+	float coherence = 0.0;
+	if (mu >= 0.25) {
+		coherence = 1.0;
+	}
+	if (mu >= 0.5) {
+		coherence = 2.0;
+	}
+	float coord_y = ((angle * 4.0 + strength) * 3.0 + coherence) / 288.0;
+
+	float3 res = float3(0.0, 0.0, 0.0);
+	float3 lo = float3(0.0, 0.0, 0.0);
+	float3 hi = float3(0.0, 0.0, 0.0);
+	float3 lo2 = float3(0.0, 0.0, 0.0);
+	float3 hi2 = float3(0.0, 0.0, 0.0);
+	float4 w;
+	w = lut.Sample(linear_clamp, float2(0.0, coord_y) + subpix);
+	res += sample0 * w.x;
+	res += sample1 * w.y;
+	res += sample2 * w.z;
+	res += sample3 * w.w;
+	w = lut.Sample(linear_clamp, float2(0.2, coord_y) + subpix);
+	res += sample4 * w.x;
+	res += sample5 * w.y;
+	res += sample6 * w.z;
+	res += sample7 * w.w;
+	w = lut.Sample(linear_clamp, float2(0.4, coord_y) + subpix);
+	res += sample8 * w.x;
+	res += sample9 * w.y;
+	res += sample10 * w.z;
+	res += sample11 * w.w;
+	w = lut.Sample(linear_clamp, float2(0.6, coord_y) + subpix);
+	res += sample12 * w.x;
+	res += sample13 * w.y;
+	res += sample14 * w.z;
+	res += sample15 * w.w;
+	w = lut.Sample(linear_clamp, float2(0.8, coord_y) + subpix);
+	res += sample16 * w.x;
+	res += sample17 * w.y;
+	w = lut.Sample(linear_clamp, float2(0.0, coord_y) + subpix_inv);
+	res += sample35 * w.x;
+	res += sample34 * w.y;
+	res += sample33 * w.z;
+	res += sample32 * w.w;
+	w = lut.Sample(linear_clamp, float2(0.2, coord_y) + subpix_inv);
+	res += sample31 * w.x;
+	res += sample30 * w.y;
+	res += sample29 * w.z;
+	res += sample28 * w.w;
+	w = lut.Sample(linear_clamp, float2(0.4, coord_y) + subpix_inv);
+	res += sample27 * w.x;
+	res += sample26 * w.y;
+	res += sample25 * w.z;
+	res += sample24 * w.w;
+	w = lut.Sample(linear_clamp, float2(0.6, coord_y) + subpix_inv);
+	res += sample23 * w.x;
+	res += sample22 * w.y;
+	res += sample21 * w.z;
+	res += sample20 * w.w;
+	w = lut.Sample(linear_clamp, float2(0.8, coord_y) + subpix_inv);
+	res += sample19 * w.x;
+	res += sample18 * w.y;
+	w = lut_ar.Sample(linear_clamp, float2(0.0, coord_y) + subpix_ar);
+	ArAcc(hi, lo, hi2, lo2, sample7, w.x);
+	ArAcc(hi, lo, hi2, lo2, sample8, w.y);
+	ArAcc(hi, lo, hi2, lo2, sample9, w.z);
+	ArAcc(hi, lo, hi2, lo2, sample10, w.w);
+	w = lut_ar.Sample(linear_clamp, float2(0.5, coord_y) + subpix_ar);
+	ArAcc(hi, lo, hi2, lo2, sample13, w.x);
+	ArAcc(hi, lo, hi2, lo2, sample14, w.y);
+	ArAcc(hi, lo, hi2, lo2, sample15, w.z);
+	ArAcc(hi, lo, hi2, lo2, sample16, w.w);
+	w = lut_ar.Sample(linear_clamp, float2(0.0, coord_y) + subpix_inv_ar);
+	ArAcc(hi, lo, hi2, lo2, sample28, w.x);
+	ArAcc(hi, lo, hi2, lo2, sample27, w.y);
+	ArAcc(hi, lo, hi2, lo2, sample26, w.z);
+	ArAcc(hi, lo, hi2, lo2, sample25, w.w);
+	w = lut_ar.Sample(linear_clamp, float2(0.5, coord_y) + subpix_inv_ar);
+	ArAcc(hi, lo, hi2, lo2, sample22, w.x);
+	ArAcc(hi, lo, hi2, lo2, sample21, w.y);
+	ArAcc(hi, lo, hi2, lo2, sample20, w.z);
+	ArAcc(hi, lo, hi2, lo2, sample19, w.w);
+
+	// Anti-Ringing: Ergebnis teilweise auf die lokale weiche Min/Max-Grenze begrenzen
+	hi = hi2 / hi - 0.1;
+	lo = 1.1 - lo2 / lo;
+	res = lerp(res, clamp(res, lo, hi), 0.800000);
+	return float4(saturate(res), 1.0);
+}
+
+technique RAVU
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSRavu(v_in);
+	}
+}
