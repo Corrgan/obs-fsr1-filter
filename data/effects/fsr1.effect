@@ -251,9 +251,13 @@ float4 PSRcas(VertData v_in) : TARGET
 	float3 mx4 = max(max(b, d), max(f, h));
 
 	// Begrenzer.
+	// Die Nenner werden von null weggehalten: Bei rein schwarzen (mx4 = 0) oder
+	// rein weißen Flächen (mn4 = 1, z. B. ausgebrannte Lichter) entstünde sonst 0/0.
+	// Wie das NaN weiterläuft, hängt vom Treiber ab (mögliche schwarze Pixel).
+	// Ergebnis an diesen Stellen: lobe = 0, also keine Schärfung - wie gewollt.
 	float2 peakC = float2(1.0, -4.0);
-	float3 hitMin = min(mn4, e) / (4.0 * mx4);
-	float3 hitMax = (peakC.x - max(mx4, e)) / (4.0 * mn4 + peakC.y);
+	float3 hitMin = min(mn4, e) / max(4.0 * mx4, float3(0.00003, 0.00003, 0.00003));
+	float3 hitMax = (peakC.x - max(mx4, e)) / min(4.0 * mn4 + peakC.y, float3(-0.00003, -0.00003, -0.00003));
 	float3 lobeRGB = max(-hitMin, hitMax);
 	float lobe = max(-0.1875, min(max(lobeRGB.r, max(lobeRGB.g, lobeRGB.b)), 0.0)) * rcas_sharp;
 

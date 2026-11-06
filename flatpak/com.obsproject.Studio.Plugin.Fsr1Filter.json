@@ -23,7 +23,13 @@
             "sources": [
                 {
                     "type": "dir",
-                    "path": ".."
+                    "path": "..",
+                    "skip": [
+                        "build-dir",
+                        ".flatpak-builder",
+                        ".git",
+                        "build"
+                    ]
                 }
             ]
         },

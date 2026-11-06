@@ -1,0 +1,5 @@
+# Flatpak-Build (install-to-var.sh)
+build-dir/
+.flatpak-builder/
+# CMake-Builds
+build/

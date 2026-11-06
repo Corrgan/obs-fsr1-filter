@@ -143,6 +143,8 @@ HLSL-/GLSL-Compiler:
 
 ## Lizenz
 
-GPL-2.0-or-later (wie libobs). Die Shader basieren auf AMDs `ffx_fsr1.h`
+GPL-2.0-or-later (wie libobs), siehe `LICENSE`. Die Lizenztexte der verwendeten
+Drittanbieter-Shader stehen in `THIRD_PARTY_NOTICES.txt` und werden mit installiert.
+Die Shader basieren auf AMDs `ffx_fsr1.h`
 (MIT-Lizenz, Copyright © 2021 Advanced Micro Devices, Inc.) und NVIDIAs NIS
 (`NIS_Scaler.h`, `NIS_Config.h`; MIT-Lizenz, Copyright © 2022 NVIDIA Corporation & Affiliates).
