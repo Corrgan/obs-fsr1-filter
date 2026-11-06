@@ -128,7 +128,28 @@ struct fsr1_filter {
 	bool warned_nis_range;
 	bool warned_no_ravu;
 	bool warned_ravu_range;
+
+	/* Zuletzt ins Log geschriebener Zustand (nur bei Änderung neu loggen) */
+	bool logged;
+	enum algorithm logged_active;
+	uint32_t logged_in_w;
+	uint32_t logged_in_h;
+	uint32_t logged_out_w;
+	uint32_t logged_out_h;
 };
+
+static const char *algo_name(enum algorithm a)
+{
+	switch (a) {
+	case ALGO_NIS:
+		return "NIS";
+	case ALGO_RAVU:
+		return "RAVU";
+	case ALGO_FSR1:
+	default:
+		return "FSR 1";
+	}
+}
 
 static const char *fsr1_get_name(void *unused)
 {
@@ -335,8 +356,42 @@ static void *fsr1_create(obs_data_t *settings, obs_source_t *context)
 		f->r_lut_ar = gs_effect_get_param_by_name(f->ravu_effect, "lut_ar");
 	}
 
+	blog(LOG_INFO, "[obs-fsr1-filter] Filter angelegt, verfügbar: FSR 1%s%s",
+	     f->nis_effect ? ", NIS" : "", f->ravu_effect ? ", RAVU" : "");
+
 	fsr1_update(f, settings);
 	return f;
+}
+
+/*
+ * Schreibt ins Log, welcher Algorithmus mit welchen Größen läuft, aber nur wenn
+ * sich daran etwas geändert hat (Umschalten, neue Kamera-Auflösung, neue Zielgröße).
+ * Schieberegler wie die Schärfe lösen bewusst keine Zeile aus.
+ */
+static void log_state(struct fsr1_filter *f)
+{
+	if (f->logged && f->logged_active == f->active && f->logged_in_w == f->in_w &&
+	    f->logged_in_h == f->in_h && f->logged_out_w == f->out_w && f->logged_out_h == f->out_h)
+		return;
+
+	obs_source_t *parent = obs_filter_get_parent(f->context);
+	const char *name = parent ? obs_source_get_name(parent) : NULL;
+
+	if (f->active != f->algo) {
+		blog(LOG_INFO, "[obs-fsr1-filter] '%s': %s %ux%u -> %ux%u (gewählt: %s, Rückfall)",
+		     name ? name : "?", algo_name(f->active), f->in_w, f->in_h, f->out_w, f->out_h,
+		     algo_name(f->algo));
+	} else {
+		blog(LOG_INFO, "[obs-fsr1-filter] '%s': %s %ux%u -> %ux%u", name ? name : "?",
+		     algo_name(f->active), f->in_w, f->in_h, f->out_w, f->out_h);
+	}
+
+	f->logged = true;
+	f->logged_active = f->active;
+	f->logged_in_w = f->in_w;
+	f->logged_in_h = f->in_h;
+	f->logged_out_w = f->out_w;
+	f->logged_out_h = f->out_h;
 }
 
 static inline uint32_t clamp_dim(double v)
@@ -424,6 +479,9 @@ static void fsr1_tick(void *data, float seconds)
 			f->warned_ravu_range = true;
 		}
 	}
+
+	if (f->valid)
+		log_state(f);
 }
 
 /* ---------------------------------------------------------------------- */

@@ -133,6 +133,12 @@ wurden nicht ausprobiert.
 
 ## Hinweise und bekannte Grenzen
 
+- Im OBS-Log (Hilfe → Protokolldateien) stehen alle Meldungen des Plugins mit
+  `[obs-fsr1-filter]`. Beim Start zeigt jeder Filter, welche Algorithmen geladen sind
+  („Filter angelegt, verfügbar: FSR 1, NIS, RAVU"). Beim Umschalten oder wenn sich Kamera- oder
+  Zielgröße ändern, folgt eine Zeile wie `'Zencam': RAVU 1920x1080 -> 2560x1440`. Weicht der
+  Filter auf FSR 1 aus, steht dort zusätzlich „(gewählt: …, Rückfall)".
+
 - FSR 1 rechnet im Gamma-Raum. Der Filter setzt bewusst nicht das Flag `OBS_SOURCE_SRGB`,
   damit OBS ihn so ausführt.
 - Die Alpha-Information der Quelle wird nicht erhalten (Ausgabe ist deckend). Für Webcams
