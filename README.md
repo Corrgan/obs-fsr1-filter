@@ -120,7 +120,9 @@ diesem Repo). Stand 18.11.2026:
 | SGSR (1,5× und 2×) | gleich der Nachrechnung des Qualcomm-Originals: im Mittel 0,3/255; einzelne Ausreißer nur dort, wo die Kantenprüfung genau auf der Schwelle liegt oder das Original selbst numerisch instabil ist |
 | FSR 1, NIS, RAVU, FSRCNNX 1,5× | übersetzt, rendert, plausibel (kein Pixelvergleich mit dem Original) |
 
-Nicht geprüft: Direct3D (Windows) und echte Grafikkarten; Rechenzeiten auf echter Hardware.
+Dazu am 18.11.2026 im echten OBS auf echter Grafikkarte (siehe „Teststand"): alle Algorithmen
+funktionieren, auch SGSR, FSRCNNX 8 und FSRCNNX 16. Nicht geprüft: Direct3D (Windows) und
+Rechenzeiten.
 
 Tipp: Passt die Leinwand nicht zu einem glatten Faktor (z. B. 1080p-Kamera, 1440p-Leinwand),
 „Feste Ausgabegröße verwenden" aktivieren und die Leinwandgröße eintragen (2560 × 1440).
@@ -188,8 +190,9 @@ Dafür werden die libobs-Entwicklungsdateien benötigt (z. B. `libobs-dev`).
 ## Teststand
 
 Läuft mit OBS 33.0.1 als Flatpak (Flathub) unter Fedora mit NVIDIA-Treiber und OpenGL
-(Webcam-Quelle: DroidCam). Andere Grafik-Backends (Direct3D, Metal) und andere Treiber
-wurden nicht ausprobiert.
+(Webcam-Quelle: DroidCam). Am 18.11.2026 dort alle sechs Einträge der Algorithmus-Liste
+getestet (FSR 1, NIS, RAVU, SGSR, FSRCNNX 8, FSRCNNX 16): funktionieren und sehen gut aus.
+Andere Grafik-Backends (Direct3D, Metal) und andere Treiber wurden nicht ausprobiert.
 
 ## Hinweise und bekannte Grenzen
 
