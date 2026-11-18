@@ -1,154 +1,153 @@
 # obs-fsr1-filter
 
-Videofilter für OBS Studio, der ein Bild hochskaliert. Fünf Algorithmen stehen zur Wahl:
+Video filter for OBS Studio that upscales a source. Five algorithms are available:
 **AMD FidelityFX Super Resolution 1.0** (EASU + RCAS), **NVIDIA Image Scaling (NIS)**,
-**RAVU-Zoom-AR** (aus den mpv-prescalers), **Snapdragon Game Super Resolution 1 (SGSR)** und
-das neuronale Netz **FSRCNNX** (aus mpv, zwei Größen). Gedacht für Webcams, Capture-Karten und
-Spiele. Alle sind reine Shader und laufen auf jeder Grafikkarte, die OBS unterstützt (NVIDIA,
-AMD, Intel) – auch FSRCNNX braucht keine KI-Hardware.
+**RAVU-Zoom-AR** (from the mpv prescalers), **Snapdragon Game Super Resolution 1 (SGSR)** and
+the neural network **FSRCNNX** (from mpv, two sizes). Meant for webcams, capture cards and
+games. All of them are plain shaders and run on every GPU that OBS supports (NVIDIA, AMD,
+Intel) – FSRCNNX does not need any AI hardware either.
 
-Der Filter heißt in OBS **„Hochskalierung (FSR 1 / NIS / RAVU / SGSR / FSRCNNX)"**. Bestehende
-Szenen mit dem alten FSR-Filter funktionieren weiter (die Filter-ID ist unverändert).
+In OBS the filter is called **"Upscale (FSR 1 / NIS / RAVU / SGSR / FSRCNNX)"**. Existing scenes
+that use the old FSR filter keep working (the filter ID is unchanged).
 
-Welcher Algorithmus wofür (Faustregel):
+Which algorithm for what (rule of thumb):
 
-| Inhalt | Empfehlung |
+| Content | Recommendation |
 |---|---|
-| Kamera, IRL, Gesichter, Text im Bild | **FSRCNNX 8** (bei Leistung übrig: FSRCNNX 16) |
-| Spiele, Capture-Karte | **SGSR** oder FSR 1 (beide schnell, scharfe Kanten) |
-| Glatte Faktoren 1×–2× mit wenig Rechenzeit | NIS |
-| Beliebige Faktoren, weiche Kanten ohne Überschwinger | RAVU-Zoom-AR |
+| Camera, IRL, faces, text in the picture | **FSRCNNX 8** (with GPU headroom: FSRCNNX 16) |
+| Games, capture card | **SGSR** or FSR 1 (both fast, sharp edges) |
+| Even factors 1×–2× with little GPU time | NIS |
+| Any factor, soft edges without overshoot | RAVU-Zoom-AR |
 
-## Wie es funktioniert
+## How it works
 
-1. **EASU** rechnet die Quelle auf die Zielauflösung hoch (kantenadaptiv).
-2. **RCAS** schärft das Ergebnis, optional mit Rauschunterdrückung.
+1. **EASU** upscales the source to the target resolution (edge-adaptive).
+2. **RCAS** sharpens the result, optionally with noise reduction.
 
-Der Filter ändert die Größe der Quelle. Eine 1280×720-Webcam mit Faktor 1,5 ist danach
-eine 1920×1080-Quelle und wird bei einer 1080p-Leinwand 1:1 dargestellt. Die Skalierung,
-die OBS am Szenenelement selbst einstellt (Bilinear, Lanczos …), lässt sich von Plugins
-nicht um „FSR" erweitern. Deshalb läuft FSR als Filter auf der Quelle.
+The filter changes the size of the source. A 1280×720 webcam with factor 1.5 becomes a
+1920×1080 source and is shown 1:1 on a 1080p canvas. The scaling OBS applies to the scene item
+itself (bilinear, Lanczos …) cannot be extended with "FSR" by plugins. That is why FSR runs as
+a filter on the source.
 
-FSR 1 ist ein rein räumlicher Upscaler: Er sieht nur das aktuelle Bild und erfindet keine
-neuen Details. Er liefert schärfere Kanten als bilineares Skalieren, ersetzt aber keine
-KI-Hochskalierung.
+FSR 1 is a purely spatial upscaler: it only sees the current frame and does not invent new
+detail. It gives sharper edges than bilinear scaling, but it is no replacement for AI upscaling.
 
-## Einstellungen
+## Settings
 
-| Einstellung | Bedeutung |
+| Setting | Meaning |
 |---|---|
-| Algorithmus | FSR 1 (Standard), NIS, RAVU-Zoom-AR, SGSR, FSRCNNX 8 oder FSRCNNX 16 |
-| Skalierungsfaktor | 1,0–4,0 (Standard 1,5, passend für 720p → 1080p) |
-| Feste Ausgabegröße verwenden | statt Faktor eine feste Breite × Höhe |
-| Schärfe (%) | nur FSR 1: RCAS-Stärke, Standard 80 % |
-| Rauschen beim Schärfen reduzieren | nur FSR 1: RCAS-Denoise, Standard an (Webcams rauschen) |
-| Schärfe (NIS, %) | nur NIS: Standard 50 % |
-| Kantenschärfe (SGSR, %) | nur SGSR: 0 % = Kantenschärfe 1,0, 100 % = 2,0 wie im Original (Standard) |
+| Algorithm | FSR 1 (default), NIS, RAVU-Zoom-AR, SGSR, FSRCNNX 8 or FSRCNNX 16 |
+| Scale factor | 1.0–4.0 (default 1.5, suits 720p → 1080p) |
+| Use fixed output size | a fixed width × height instead of a factor |
+| Sharpness (%) | FSR 1 only: RCAS strength, default 80 % |
+| Reduce noise while sharpening | FSR 1 only: RCAS denoise, on by default (webcams are noisy) |
+| Sharpness (NIS, %) | NIS only: default 50 % |
+| Edge sharpness (SGSR, %) | SGSR only: 0 % = edge sharpness 1.0, 100 % = 2.0 as in the original (default) |
 
-### NIS: Status und Grenzen
+### NIS: status and limits
 
-- NIS skaliert nur **1× bis 2×** je Achse (wie im Original). Liegt die Zielgröße außerhalb,
-  nutzt der Filter automatisch FSR 1 und schreibt einen Hinweis ins Log.
-- NIS läuft in einem einzigen Pass, mit eigener Effect-Datei (`data/effects/nis.effect`).
-  Lässt sie sich nicht kompilieren, steht der Grund im OBS-Log (Zeilen mit
-  `obs-fsr1-filter`) und FSR 1 funktioniert unverändert weiter.
-- Der NIS-Shader übersetzt und rendert im OBS-Lauftest (siehe unten); seine Pixel sind nicht
-  mit dem Original verglichen.
-- Der Shader und die Koeffiziententabellen entstehen aus Generatoren in `tools/`
-  (`gen_nis_effect.py`, `extract_nis_coefs.py`); nicht von Hand ändern.
+- NIS only scales **1× to 2×** per axis (as in the original). If the target size is outside
+  that range, the filter uses FSR 1 automatically and writes a note to the log.
+- NIS runs in a single pass with its own effect file (`data/effects/nis.effect`). If it fails
+  to compile, the reason is in the OBS log (lines containing `obs-fsr1-filter`) and FSR 1 keeps
+  working unchanged.
+- The NIS shader compiles and renders in the headless OBS test (see below); its pixels are not
+  compared against the original.
+- The shader and the coefficient tables are generated by scripts in `tools/`
+  (`gen_nis_effect.py`, `extract_nis_coefs.py`); do not edit them by hand.
 
-### RAVU-Zoom-AR: Status und Grenzen
+### RAVU-Zoom-AR: status and limits
 
-- RAVU ist ein kleiner, vorab trainierter Upscaler: Für jede Kantenrichtung, -stärke und
-  -schärfe hat er gelernte Filtergewichte (zwei Tabellen in `data/ravu/`). Er vergrößert in
-  **beliebigem Verhältnis** (z. B. 1080p → 1440p) und begrenzt Überschwinger an harten Kanten
-  („AR" = Anti-Ringing). Es gibt keine Regler.
-- Nur echte Vergrößerungen: Ist die Zielgröße auf einer Achse nicht größer als die Quelle,
-  nutzt der Filter FSR 1 und schreibt einen Hinweis ins Log.
-- Lädt der Shader oder eine der Tabellen nicht, steht der Grund im OBS-Log und FSR 1 läuft
-  weiter.
-- Der Shader entsteht mit `tools/gen_ravu.py` aus dem Original `ravu-zoom-ar-r3-rgb.hook`.
-  Der Generator übersetzt Zeile für Zeile und bricht bei allem ab, was er nicht kennt.
-- **Geprüft:** In einem Software-WebGL-Test liefern Original und Übersetzung auf einem
-  Testbild (Kanten, Verläufe, Rauschen, weiße und schwarze Flächen) bei 1,33×, 1,5× und 2×
-  dieselben Pixel (Abweichung < 0,00005). Im OBS-Lauftest übersetzt und rendert er (siehe unten).
-- Rechenaufwand ähnlich NIS (36 Bildpunkte plus 14 Tabellenzugriffe pro Ausgabepixel).
+- RAVU is a small pre-trained upscaler: for every edge direction, strength and coherence it has
+  learned filter weights (two tables in `data/ravu/`). It upscales by **any ratio** (e.g.
+  1080p → 1440p) and limits overshoot at hard edges ("AR" = anti-ringing). There are no
+  settings.
+- Upscaling only: if the target size is not larger than the source on one axis, the filter uses
+  FSR 1 and writes a note to the log.
+- If the shader or one of the tables fails to load, the reason is in the OBS log and FSR 1 keeps
+  running.
+- The shader is generated by `tools/gen_ravu.py` from the original `ravu-zoom-ar-r3-rgb.hook`.
+  The generator translates line by line and aborts on anything it does not know.
+- **Verified:** in a software WebGL test, original and translation produce the same pixels on a
+  test image (edges, gradients, noise, white and black areas) at 1.33×, 1.5× and 2× (difference
+  < 0.00005). It compiles and renders in the headless OBS test (see below).
+- Cost similar to NIS (36 pixels plus 14 table lookups per output pixel).
 
-### SGSR: Status und Grenzen
+### SGSR: status and limits
 
-- Snapdragon Game Super Resolution 1 von Qualcomm (BSD-3-Clause), Variante mit
-  Kantenrichtung: ein einziger Pass, 12-Punkt-Lanczos-ähnliche Interpolation der Helligkeit mit
-  adaptiver Kantenschärfung, auf das bilinear vergrößerte Bild aufgeschlagen. Sehr günstig, für
-  Spiele gedacht, beliebige Vergrößerung.
-- Nur echte Vergrößerungen (sonst FSR 1, mit Hinweis im Log).
-- Kantenschwelle fest 8/255 (Original für Mobilgeräte); die strengere VR-Schwelle 4/255 würde
-  Webcam-Rauschen mitschärfen.
-- Abweichungen vom Original: Gather4 ist durch vier Punkt-Abtastungen in der Reihenfolge von
-  Direct3D ersetzt, Alpha kommt aus der Quelle, die Kantenschärfe ist ein Regler.
+- Snapdragon Game Super Resolution 1 by Qualcomm (BSD-3-Clause), edge-direction variant: a
+  single pass, 12-tap Lanczos-like interpolation of luma with adaptive edge sharpening, added on
+  top of the bilinearly upscaled image. Very cheap, made for games, any upscale ratio.
+- Upscaling only (otherwise FSR 1, with a note in the log).
+- Edge threshold fixed at 8/255 (the original's mobile value); the stricter VR value 4/255 would
+  sharpen webcam noise as well.
+- Differences from the original: Gather4 is replaced by four point samples in Direct3D order,
+  alpha comes from the source, edge sharpness is a setting.
 
-### FSRCNNX: Status und Grenzen
+### FSRCNNX: status and limits
 
-- FSRCNNX von igv (LGPL-3.0-or-later) ist ein kleines neuronales Netz aus mpv, trainiert auf
-  echten Fotos: Es rechnet die Helligkeit auf die doppelte Größe und erfindet dabei feine
-  Details (Haare, Text, Stoff), die klassische Verfahren nur weichzeichnen. Zwei Größen:
-  **FSRCNNX 8** (8 Kanäle, 13 Passes) und **FSRCNNX 16** (16 Kanäle, 25 Passes, etwa viermal so
-  viel Rechenzeit).
-- Das Netz rechnet immer auf 2×; ein letzter Pass bringt das Ergebnis auf die Zielgröße
-  (Catmull-Rom). Bei 2× ist es am besten, 1,5× (720p → 1080p) geht ebenfalls gut, bei mehr als
-  2× wird das 2×-Bild klassisch weiter vergrößert. Nur echte Vergrößerungen, Quelle höchstens
-  4096 Pixel breit/hoch (sonst FSR 1, mit Hinweis im Log).
-- Farbe: Das Netz arbeitet nur auf Y' (BT.709, Gamma-Raum). Die Farbe kommt bilinear aus der
-  Quelle und bleibt exakt erhalten, nur die Helligkeit wird ersetzt – wie bei mpv.
-- Grafikspeicher: Zwischenbilder RGBA16F in Eingabegröße (FSRCNNX 8: 6, FSRCNNX 16: 12, dank
-  Lebensdauer-Analyse) plus ein Bild in doppelter Größe. Bei einer 720p-Webcam etwa 75 MB
-  (FSRCNNX 8) bzw. 120 MB (FSRCNNX 16), bei 1080p gut das Doppelte.
-- Die Effects (bis 320 KB) werden erst geladen, wenn FSRCNNX gewählt ist, damit das Anlegen der
-  Filter nicht langsamer wird.
-- Effects und Pass-Tabellen entstehen mit `tools/gen_fsrcnnx.py` aus den Originalen
-  `FSRCNNX_x2_8-0-4-1.glsl` und `FSRCNNX_x2_16-0-4-1.glsl` (Releases von FSRCNN-TensorFlow).
+- FSRCNNX by igv (LGPL-3.0-or-later) is a small neural network from mpv, trained on real photos:
+  it computes luma at twice the size and adds fine detail (hair, text, fabric) that classic
+  methods only blur. Two sizes: **FSRCNNX 8** (8 channels, 13 passes) and **FSRCNNX 16**
+  (16 channels, 25 passes, roughly four times the GPU time).
+- The network always works at 2×; a final pass brings the result to the target size
+  (Catmull-Rom). It is best at 2×, 1.5× (720p → 1080p) works well too, above 2× the 2× image is
+  upscaled further classically. Upscaling only, source at most 4096 pixels wide/high (otherwise
+  FSR 1, with a note in the log).
+- Colour: the network only works on Y' (BT.709, gamma space). Colour comes bilinearly from the
+  source and is preserved exactly, only luma is replaced – as in mpv.
+- GPU memory: RGBA16F intermediate images at input size (FSRCNNX 8: 6, FSRCNNX 16: 12, thanks to
+  a lifetime analysis) plus one image at twice the size. For a 720p webcam about 75 MB
+  (FSRCNNX 8) or 120 MB (FSRCNNX 16), at 1080p a little more than twice that.
+- The effects (up to 320 KB) are only loaded once FSRCNNX is selected, so creating filters does
+  not get slower.
+- Effects and pass tables are generated by `tools/gen_fsrcnnx.py` from the originals
+  `FSRCNNX_x2_8-0-4-1.glsl` and `FSRCNNX_x2_16-0-4-1.glsl` (releases of FSRCNN-TensorFlow).
 
-### Geprüft in OBS (Lauftest)
+### Verified in OBS
 
-Ein Lauftest startet libobs 30.2 ohne Fenster (OpenGL über Xvfb und Mesa llvmpipe), lädt das
-gebaute Plugin, schickt ein Testbild (Kanten, Verläufe, Kreis, Streifen, Schachbrett, Rauschen)
-durch jeden Algorithmus und liest das Ergebnis zurück (liegt bei der Nachtschicht, nicht in
-diesem Repo). Stand 18.11.2026:
+A headless test starts libobs 30.2 without a window (OpenGL via Xvfb and Mesa llvmpipe), loads
+the built plugin, sends a test image (edges, gradients, circle, stripes, checkerboard, noise)
+through every algorithm and reads the result back (it lives in the maintainer's nightly test
+setup, not in this repository). As of 18 Nov 2026:
 
-| Algorithmus | Ergebnis |
+| Algorithm | Result |
 |---|---|
-| FSRCNNX 8 / 16 (2×) | gleich der Nachrechnung des mpv-Originals: höchstens 1,9/255, im Mittel 0,3/255 |
-| SGSR (1,5× und 2×) | gleich der Nachrechnung des Qualcomm-Originals: im Mittel 0,3/255; einzelne Ausreißer nur dort, wo die Kantenprüfung genau auf der Schwelle liegt oder das Original selbst numerisch instabil ist |
-| FSR 1, NIS, RAVU, FSRCNNX 1,5× | übersetzt, rendert, plausibel (kein Pixelvergleich mit dem Original) |
+| FSRCNNX 8 / 16 (2×) | equal to a recomputation of the mpv original: at most 1.9/255, mean 0.3/255 |
+| SGSR (1.5× and 2×) | equal to a recomputation of the Qualcomm original: mean 0.3/255; single outliers only where the edge check lands exactly on the threshold or the original itself is numerically unstable |
+| FSR 1, NIS, RAVU, FSRCNNX 1.5× | compiles, renders, plausible (no pixel comparison with the original) |
 
-Nicht geprüft: Direct3D (Windows) und echte Grafikkarten; Rechenzeiten auf echter Hardware.
+In addition, on 18 Nov 2026 all algorithms were tested in OBS on real hardware (see "Test
+setup"): all of them work, including SGSR, FSRCNNX 8 and FSRCNNX 16. Not tested: Direct3D
+(Windows) and performance.
 
-Tipp: Passt die Leinwand nicht zu einem glatten Faktor (z. B. 1080p-Kamera, 1440p-Leinwand),
-„Feste Ausgabegröße verwenden" aktivieren und die Leinwandgröße eintragen (2560 × 1440).
-Dann muss OBS die Quelle nicht noch einmal herunterskalieren. Der Filter gehört ans Ende der
-Filterkette (nach Farbkorrektur o. Ä.).
+Tip: if the canvas does not match an even factor (e.g. 1080p camera, 1440p canvas), enable
+"Use fixed output size" and enter the canvas size (2560 × 1440). Then OBS does not have to
+scale the source down again. The filter belongs at the end of the filter chain (after colour
+correction etc.).
 
-## Installation (Flatpak-OBS, empfohlen: var-Ordner)
+## Installation (Flatpak OBS, recommended: var folder)
 
-Voraussetzungen: `flatpak`, `flatpak-builder`, OBS Studio als Flatpak und das SDK, mit dem
-dieses OBS gebaut wurde:
+Requirements: `flatpak`, `flatpak-builder`, OBS Studio as a Flatpak and the SDK this OBS was
+built with:
 
 ```bash
-# SDK-Version nachsehen (Zeile "Sdk:") und installieren:
+# look up the SDK version (line "Sdk:") and install it:
 flatpak info com.obsproject.Studio | grep -i sdk
 flatpak install flathub org.freedesktop.Sdk//26.08
 ```
 
-Stimmt die Version nicht, `"sdk"` in
-`flatpak/com.obsproject.Studio.Plugin.Fsr1Filter.json` anpassen.
+If the version differs, adjust `"sdk"` in
+`flatpak/com.obsproject.Studio.Plugin.Fsr1Filter.json`.
 
-Dann im Projektordner:
+Then, in the project folder:
 
 ```bash
 ./install-to-var.sh
 ```
 
-Das Skript baut das Plugin im Flatpak-SDK (damit es zur libobs im OBS-Flatpak passt) und
-kopiert es nach
+The script builds the plugin in the Flatpak SDK (so it matches the libobs inside the OBS
+Flatpak) and copies it to
 
 ```
 ~/.var/app/com.obsproject.Studio/config/obs-studio/plugins/obs-fsr1-filter/
@@ -156,25 +155,28 @@ kopiert es nach
 └── data/{effects,locale}/…
 ```
 
-Danach OBS komplett neu starten. Im OBS-Log (Hilfe → Protokolldateien) sollte stehen:
+Then restart OBS completely. The OBS log (Help → Log Files) should contain:
 
 ```
 [obs-fsr1-filter] geladen
 ```
 
-Verwendung: Rechtsklick auf die Webcam-Quelle → **Filter** → unter „Effektfilter" auf **+** →
-**FSR 1 Hochskalierung**.
+(The plugin's log messages are in German.)
 
-### Alternative: als Flatpak-Erweiterung
+Usage: right-click the webcam source → **Filters** → under "Effect Filters" click **+** →
+**Upscale (FSR 1 / NIS / RAVU / SGSR / FSRCNNX)**.
+
+### Alternative: as a Flatpak extension
 
 ```bash
 flatpak-builder --user --install --force-clean build-dir \
     flatpak/com.obsproject.Studio.Plugin.Fsr1Filter.json
 ```
 
-Dieser Weg baut fehlerfrei, das Laden als Erweiterung wurde aber nicht getestet.
+This builds without errors; loading as an extension has not been tested. Use only one of the
+two ways – with both, OBS loads the plugin twice.
 
-### Native OBS-Installation (ohne Flatpak)
+### Native OBS installation (without Flatpak)
 
 ```bash
 cmake -S . -B build && cmake --build build
@@ -183,66 +185,65 @@ cp build/obs-fsr1-filter.so ~/.config/obs-studio/plugins/obs-fsr1-filter/bin/64b
 cp -r data ~/.config/obs-studio/plugins/obs-fsr1-filter/data
 ```
 
-Dafür werden die libobs-Entwicklungsdateien benötigt (z. B. `libobs-dev`).
+This needs the libobs development files (e.g. `libobs-dev`).
 
-## Teststand
+## Test setup
 
-Läuft mit OBS 33.0.1 als Flatpak (Flathub) unter Fedora mit NVIDIA-Treiber und OpenGL
-(Webcam-Quelle: DroidCam). Andere Grafik-Backends (Direct3D, Metal) und andere Treiber
-wurden nicht ausprobiert.
+Runs with OBS 33.0.1 as a Flatpak (Flathub) on Fedora with the NVIDIA driver and OpenGL
+(webcam source: DroidCam). On 18 Nov 2026 all six entries of the algorithm list (FSR 1, NIS,
+RAVU, SGSR, FSRCNNX 8, FSRCNNX 16) were tested in OBS on real hardware: they work and look good.
+Other graphics backends (Direct3D, Metal) and other drivers have not been tried.
 
-## Hinweise und bekannte Grenzen
+## Notes and known limits
 
-- Im OBS-Log (Hilfe → Protokolldateien) stehen alle Meldungen des Plugins mit
-  `[obs-fsr1-filter]`. Beim Start zeigt jeder Filter, welche Algorithmen geladen sind
-  („Filter angelegt, verfügbar: FSR 1, NIS, RAVU, SGSR, FSRCNNX bei Bedarf"; FSRCNNX meldet sich
-  beim ersten Einschalten mit „effects/fsrcnnx_8.effect geladen"). Beim Umschalten oder wenn sich Kamera- oder
-  Zielgröße ändern, folgt eine Zeile wie `'Zencam': RAVU 1920x1080 -> 2560x1440`. Weicht der
-  Filter auf FSR 1 aus, steht dort zusätzlich „(gewählt: …, Rückfall)".
+- All of the plugin's messages are in the OBS log (Help → Log Files) with `[obs-fsr1-filter]`.
+  At start every filter shows which algorithms are loaded ("Filter angelegt, verfügbar: FSR 1,
+  NIS, RAVU, SGSR, FSRCNNX bei Bedarf"; FSRCNNX reports "effects/fsrcnnx_8.effect geladen" when
+  it is first switched on). When switching, or when the camera or target size changes, a line
+  like `'Zencam': RAVU 1920x1080 -> 2560x1440` follows. If the filter falls back to FSR 1, it
+  also says "(gewählt: …, Rückfall)" (selected: …, fallback).
+- FSR 1 works in gamma space. The filter deliberately does not set the `OBS_SOURCE_SRGB` flag, so
+  that OBS runs it that way.
+- FSR 1, NIS and RAVU do not keep the source's alpha (the output is opaque); SGSR and FSRCNNX
+  take alpha from the source. For webcams this does not matter.
+- With heavily compressed webcam images (MJPEG), block noise is amplified as well. In that case
+  lower the sharpness and keep "Reduce noise while sharpening" enabled.
+- Assumption in the Flatpak build: the `com.obsproject.Studio` runtime ships libobs headers and
+  CMake files. This was confirmed while building.
+- The plugin uses the classic layout (`lib/obs-plugins`, `share/obs/obs-plugins/<name>` or, in
+  the var folder, `bin/64bit` + `data`). OBS 33 still loads that as a "legacy" plugin.
 
-- FSR 1 rechnet im Gamma-Raum. Der Filter setzt bewusst nicht das Flag `OBS_SOURCE_SRGB`,
-  damit OBS ihn so ausführt.
-- Die Alpha-Information der Quelle wird nicht erhalten (Ausgabe ist deckend). Für Webcams
-  ist das unproblematisch.
-- Bei stark komprimierten Webcam-Bildern (MJPEG) wird Blockrauschen mitverstärkt. Dann Schärfe
-  senken und „Rauschen reduzieren" aktiv lassen.
-- Annahme im Flatpak-Build: Die Laufzeit `com.obsproject.Studio` bringt libobs-Header und
-  CMake-Dateien mit. Das hat sich beim Bauen bestätigt.
-- Das Plugin liegt im klassischen Layout (`lib/obs-plugins`, `share/obs/obs-plugins/<name>`
-  bzw. im var-Ordner `bin/64bit` + `data`). OBS 33 lädt das weiterhin als „Legacy"-Plugin.
+## Shader development notes
 
-## Entwicklungshinweise zum Shader
+OBS translates `.effect` files itself and is more sensitive than a regular HLSL/GLSL compiler:
 
-OBS übersetzt `.effect`-Dateien selbst und ist dabei empfindlicher als ein normaler
-HLSL-/GLSL-Compiler:
+- **Pass an error buffer.** Without a buffer, `gs_effect_create_from_file` discards the
+  compiler message. The plugin therefore writes it to the OBS log itself.
+- **No `#define NAME (…)`.** The preprocessor takes the parenthesis after the name for a
+  parameter list (error "Expected identifier"). Write constants inline.
+- **No exponent literals** such as `1.0e-8`; use `0.00000001` instead.
+- **No ternary operator.** Use `if`/`else`.
+- **None of this applies to FSR only:** all effects follow the same rules and are separate
+  files, so a shader error there does not take FSR down with it. `gen_ravu.py` and
+  `gen_fsrcnnx.py` check the rules automatically while generating.
+- **No matrices or arrays.** The RAVU original uses `mat4x3`/`matrixCompMult`; the translation
+  computes with individual `float3` values instead. FSRCNNX's `mat4` weights are written out as
+  four `float4` columns.
+- Single point samples are used instead of Gather4 (works on every backend).
+- **`gs_technique_end()` clears all parameters of an effect** (libobs `effect.c`). Anyone who
+  runs several passes in a row with one effect (FSRCNNX) has to set textures and values again
+  before every pass – otherwise everything from the second pass on is computed with zeros.
+- **No loops** in the generated shaders (Catmull-Rom is written out).
 
-- **Fehlerpuffer übergeben.** Ohne Puffer an `gs_effect_create_from_file` verwirft OBS die
-  Compiler-Meldung. Das Plugin gibt sie deshalb selbst ins OBS-Log aus.
-- **Kein `#define NAME (…)`.** Der Präprozessor hält die Klammer nach dem Namen für eine
-  Parameterliste (Fehler „Expected identifier"). Konstanten direkt hinschreiben.
-- **Keine Exponenten-Literale** wie `1.0e-8`, stattdessen `0.00000001`.
-- **Kein ternärer Operator.** `if`/`else` verwenden.
-- **Nichts davon gilt nur für FSR:** `nis.effect` und `ravu.effect` folgen denselben Regeln
-  und sind eigene Dateien, damit ein Shaderfehler dort FSR nicht mitreißt. `gen_ravu.py`
-  prüft die Regeln beim Erzeugen maschinell.
-- **Keine Matrizen oder Arrays.** Das Original von RAVU nutzt `mat4x3`/`matrixCompMult`;
-  die Übersetzung rechnet stattdessen mit einzelnen `float3`-Werten.
-- Statt Gather4 werden einzelne Punkt-Abtastungen verwendet (läuft auf allen Backends).
-- **`gs_technique_end()` leert alle Parameter eines Effects** (libobs `effect.c`). Wer mit
-  einem Effect mehrere Passes nacheinander rechnet (FSRCNNX), muss Texturen und Werte vor jedem
-  Pass neu setzen – sonst rechnet ab dem zweiten Pass alles mit Nullen.
-- **Keine Schleifen** in den generierten Shadern (Catmull-Rom ist ausgeschrieben).
+## License
 
-## Lizenz
+GPL-2.0-or-later (like libobs), see `LICENSE`. The license texts of the third-party shaders are
+in `THIRD_PARTY_NOTICES.txt` and are installed alongside. The shaders are based on AMD's
+`ffx_fsr1.h` (MIT license, Copyright © 2021 Advanced Micro Devices, Inc.) and NVIDIA's NIS
+(`NIS_Scaler.h`, `NIS_Config.h`; MIT license, Copyright © 2022 NVIDIA Corporation & Affiliates).
 
-GPL-2.0-or-later (wie libobs), siehe `LICENSE`. Die Lizenztexte der verwendeten
-Drittanbieter-Shader stehen in `THIRD_PARTY_NOTICES.txt` und werden mit installiert.
-Die Shader basieren auf AMDs `ffx_fsr1.h`
-(MIT-Lizenz, Copyright © 2021 Advanced Micro Devices, Inc.) und NVIDIAs NIS
-(`NIS_Scaler.h`, `NIS_Config.h`; MIT-Lizenz, Copyright © 2022 NVIDIA Corporation & Affiliates).
-
-Ausnahmen: Die RAVU-Dateien (`data/effects/ravu.effect`, `data/ravu/*.bin`) sind aus RAVU von
-Bin Jin übersetzt, die FSRCNNX-Dateien (`data/effects/fsrcnnx_*.effect`,
-`src/fsrcnnx_*_passes.h`) aus FSRCNNX von igv; beide stehen wie die Originale unter
-**LGPL-3.0-or-later** (Volltexte in `LICENSES/`). Der SGSR-Shader (`data/effects/sgsr.effect`)
-basiert auf Qualcomms Snapdragon GSR 1 (BSD-3-Clause, Text in `THIRD_PARTY_NOTICES.txt`).
+Exceptions: the RAVU files (`data/effects/ravu.effect`, `data/ravu/*.bin`) are translated from
+RAVU by Bin Jin, the FSRCNNX files (`data/effects/fsrcnnx_*.effect`, `src/fsrcnnx_*_passes.h`)
+from FSRCNNX by igv; both are, like the originals, under **LGPL-3.0-or-later** (full texts in
+`LICENSES/`). The SGSR shader (`data/effects/sgsr.effect`) is based on Qualcomm's Snapdragon
+GSR 1 (BSD-3-Clause, text in `THIRD_PARTY_NOTICES.txt`).
