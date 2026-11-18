@@ -2,18 +2,23 @@
  * obs-fsr1-filter
  *
  * Videofilter für OBS Studio zum Hochskalieren von Webcams und Capture-Karten
- * mit niedriger Auflösung. Drei Algorithmen stehen zur Wahl:
+ * mit niedriger Auflösung. Fünf Algorithmen stehen zur Wahl:
  *
  *   - AMD FidelityFX Super Resolution 1.0 (EASU + RCAS), data/effects/fsr1.effect
  *   - NVIDIA Image Scaling (NVScaler),                  data/effects/nis.effect
  *   - RAVU-Zoom-AR (r3, aus mpv-prescalers),            data/effects/ravu.effect
  *                                                       + Gewichtstabellen in data/ravu/
+ *   - Snapdragon Game Super Resolution 1 (SGSR),        data/effects/sgsr.effect
+ *   - FSRCNNX (neuronales Netz, 8 oder 16 Kanäle),      data/effects/fsrcnnx_{8,16}.effect
+ *                                                       + Pass-Tabellen src/fsrcnnx_*_passes.h
  *
- * Jeder Algorithmus liegt in einer eigenen Effect-Datei. Schlägt das Laden von NIS oder
- * RAVU fehl, bleibt FSR 1 voll nutzbar (der Filter fällt dann darauf zurück).
+ * Jeder Algorithmus liegt in einer eigenen Effect-Datei. Schlägt das Laden eines anderen
+ * Algorithmus fehl, bleibt FSR 1 voll nutzbar (der Filter fällt dann darauf zurück).
+ * FSRCNNX wird erst geladen, wenn es gewählt ist (große Effects, viele Zwischenbilder).
  *
  * Lizenz: GPL-2.0-or-later (wie libobs). Die Shader basieren auf AMDs ffx_fsr1.h (MIT),
- * NVIDIAs NIS_Scaler.h (MIT) und RAVU von Bin Jin (LGPL-3.0-or-later).
+ * NVIDIAs NIS_Scaler.h (MIT), RAVU von Bin Jin (LGPL-3.0-or-later), SGSR von Qualcomm
+ * (BSD-3-Clause) und FSRCNNX von igv (LGPL-3.0-or-later).
  * Siehe THIRD_PARTY_NOTICES.txt.
  */
 
@@ -27,6 +32,18 @@
 #include <string.h>
 
 #include "nis_coef.h"
+
+/* Ein Rechen-Pass von FSRCNNX (Tabellen aus tools/gen_fsrcnnx.py) */
+#define FSRCNNX_MAX_INPUTS 5
+struct fsrcnnx_pass {
+	const char *tech;
+	int out;    /* Platz des Ergebnisses */
+	int inputs; /* Anzahl Eingaben */
+	int in[FSRCNNX_MAX_INPUTS]; /* Plätze der Eingaben, -1 = Quellbild, -2 = unbenutzt */
+};
+#include "fsrcnnx_8_passes.h"
+#include "fsrcnnx_16_passes.h"
+#define FSRCNNX_MAX_SLOTS 12
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE("obs-fsr1-filter", "en-US")
@@ -42,15 +59,22 @@ OBS_MODULE_USE_DEFAULT_LOCALE("obs-fsr1-filter", "en-US")
 #define S_SHARPNESS "sharpness"
 #define S_DENOISE "denoise"
 #define S_NIS_SHARPNESS "nis_sharpness"
+#define S_SGSR_SHARPNESS "sgsr_sharpness"
 
 #define V_ALGO_FSR1 "fsr1"
 #define V_ALGO_NIS "nis"
 #define V_ALGO_RAVU "ravu"
+#define V_ALGO_SGSR "sgsr"
+#define V_ALGO_FSRCNNX "fsrcnnx"
+#define V_ALGO_FSRCNNX_HQ "fsrcnnx_hq"
 
 #define T_ALGO obs_module_text("Algorithm")
 #define T_ALGO_FSR1 obs_module_text("AlgoFSR1")
 #define T_ALGO_NIS obs_module_text("AlgoNIS")
 #define T_ALGO_RAVU obs_module_text("AlgoRAVU")
+#define T_ALGO_SGSR obs_module_text("AlgoSGSR")
+#define T_ALGO_FSRCNNX obs_module_text("AlgoFSRCNNX")
+#define T_ALGO_FSRCNNX_HQ obs_module_text("AlgoFSRCNNXHQ")
 #define T_FACTOR obs_module_text("Factor")
 #define T_CUSTOM obs_module_text("CustomSize")
 #define T_WIDTH obs_module_text("Width")
@@ -58,6 +82,7 @@ OBS_MODULE_USE_DEFAULT_LOCALE("obs-fsr1-filter", "en-US")
 #define T_SHARPNESS obs_module_text("Sharpness")
 #define T_DENOISE obs_module_text("Denoise")
 #define T_NIS_SHARPNESS obs_module_text("NISSharpness")
+#define T_SGSR_SHARPNESS obs_module_text("SGSRSharpness")
 
 #define MAX_OUTPUT_DIMENSION 8192
 
@@ -69,10 +94,38 @@ OBS_MODULE_USE_DEFAULT_LOCALE("obs-fsr1-filter", "en-US")
 #define RAVU_LUT_AR_W 18
 #define RAVU_LUT_AR_H 2592
 
+/* SGSR: Kantenschwelle wie im Original für Mobilgeräte (8/255); Webcams rauschen, die
+ * strengere VR-Schwelle 4/255 würde Rauschen mitschärfen. */
+#define SGSR_EDGE_THRESHOLD (8.0f / 255.0f)
+
 enum algorithm {
 	ALGO_FSR1,
 	ALGO_NIS,
 	ALGO_RAVU,
+	ALGO_SGSR,
+	ALGO_FSRCNNX,
+	ALGO_FSRCNNX_HQ,
+};
+
+/* FSRCNNX: ein Netz (8 oder 16 Kanäle) mit seinen Zwischenbildern */
+struct fsrcnnx_net {
+	const char *file;
+	const struct fsrcnnx_pass *passes;
+	int npasses;
+	int nslots;
+	int agg_in;
+
+	bool tried; /* Laden versucht (bei Fehler nicht jedes Bild erneut) */
+	gs_effect_t *effect;
+	gs_eparam_t *p_image;
+	gs_eparam_t *p_t[FSRCNNX_MAX_INPUTS];
+	gs_eparam_t *p_y2x;
+	gs_eparam_t *p_texel;
+	gs_eparam_t *p_input_size;
+	gs_eparam_t *p_y2x_size;
+	gs_texrender_t *src;                      /* Quellbild (Eingabegröße) */
+	gs_texrender_t *slot[FSRCNNX_MAX_SLOTS];  /* Zwischenbilder RGBA16F (Eingabegröße) */
+	gs_texrender_t *y2x;                      /* Y' in doppelter Größe */
 };
 
 struct fsr1_filter {
@@ -105,6 +158,17 @@ struct fsr1_filter {
 	gs_texture_t *ravu_lut_tex;
 	gs_texture_t *ravu_lut_ar_tex;
 
+	/* SGSR (optional) */
+	gs_effect_t *sgsr_effect;
+	gs_eparam_t *g_input_size;
+	gs_eparam_t *g_texel;
+	gs_eparam_t *g_edge_threshold;
+	gs_eparam_t *g_edge_sharpness;
+
+	/* FSRCNNX (optional, erst bei Bedarf geladen) */
+	struct fsrcnnx_net fsrcnnx;
+	struct fsrcnnx_net fsrcnnx_hq;
+
 	/* Einstellungen */
 	enum algorithm algo;
 	double factor;
@@ -114,6 +178,7 @@ struct fsr1_filter {
 	double sharpness;     /* FSR 1: 0..100 % */
 	bool denoise;         /* FSR 1 */
 	double nis_sharpness; /* NIS: 0..100 % */
+	double sgsr_sharpness; /* SGSR: 0..100 % (Kantenschärfe 1,0..2,0) */
 
 	/* Größen und Wahl des Algorithmus (in video_tick berechnet) */
 	uint32_t in_w;
@@ -128,6 +193,10 @@ struct fsr1_filter {
 	bool warned_nis_range;
 	bool warned_no_ravu;
 	bool warned_ravu_range;
+	bool warned_no_sgsr;
+	bool warned_sgsr_range;
+	bool warned_no_fsrcnnx;
+	bool warned_fsrcnnx_range;
 
 	/* Zuletzt ins Log geschriebener Zustand (nur bei Änderung neu loggen) */
 	bool logged;
@@ -145,6 +214,12 @@ static const char *algo_name(enum algorithm a)
 		return "NIS";
 	case ALGO_RAVU:
 		return "RAVU";
+	case ALGO_SGSR:
+		return "SGSR";
+	case ALGO_FSRCNNX:
+		return "FSRCNNX 8";
+	case ALGO_FSRCNNX_HQ:
+		return "FSRCNNX 16";
 	case ALGO_FSR1:
 	default:
 		return "FSR 1";
@@ -166,6 +241,12 @@ static void fsr1_update(void *data, obs_data_t *settings)
 		f->algo = ALGO_NIS;
 	else if (algo && strcmp(algo, V_ALGO_RAVU) == 0)
 		f->algo = ALGO_RAVU;
+	else if (algo && strcmp(algo, V_ALGO_SGSR) == 0)
+		f->algo = ALGO_SGSR;
+	else if (algo && strcmp(algo, V_ALGO_FSRCNNX) == 0)
+		f->algo = ALGO_FSRCNNX;
+	else if (algo && strcmp(algo, V_ALGO_FSRCNNX_HQ) == 0)
+		f->algo = ALGO_FSRCNNX_HQ;
 	else
 		f->algo = ALGO_FSR1;
 
@@ -176,6 +257,22 @@ static void fsr1_update(void *data, obs_data_t *settings)
 	f->sharpness = obs_data_get_double(settings, S_SHARPNESS);
 	f->denoise = obs_data_get_bool(settings, S_DENOISE);
 	f->nis_sharpness = obs_data_get_double(settings, S_NIS_SHARPNESS);
+	f->sgsr_sharpness = obs_data_get_double(settings, S_SGSR_SHARPNESS);
+}
+
+/* Gibt alles eines FSRCNNX-Netzes frei (im Grafikkontext); tried bleibt erhalten. */
+static void fsrcnnx_free(struct fsrcnnx_net *n)
+{
+	gs_effect_destroy(n->effect);
+	n->effect = NULL;
+	gs_texrender_destroy(n->src);
+	n->src = NULL;
+	for (int i = 0; i < FSRCNNX_MAX_SLOTS; i++) {
+		gs_texrender_destroy(n->slot[i]);
+		n->slot[i] = NULL;
+	}
+	gs_texrender_destroy(n->y2x);
+	n->y2x = NULL;
 }
 
 static void fsr1_destroy(void *data)
@@ -190,6 +287,9 @@ static void fsr1_destroy(void *data)
 	gs_effect_destroy(f->ravu_effect);
 	gs_texture_destroy(f->ravu_lut_tex);
 	gs_texture_destroy(f->ravu_lut_ar_tex);
+	gs_effect_destroy(f->sgsr_effect);
+	fsrcnnx_free(&f->fsrcnnx);
+	fsrcnnx_free(&f->fsrcnnx_hq);
 	obs_leave_graphics();
 
 	bfree(f);
@@ -302,6 +402,50 @@ static void load_ravu(struct fsr1_filter *f)
 	}
 }
 
+/*
+ * FSRCNNX laden: Effect, Parameter und die Zwischenziele. Bei jedem Fehler bleibt das Netz
+ * leer (effect == NULL) und der Filter nutzt FSR 1. Muss im Grafikkontext aufgerufen werden.
+ */
+static void load_fsrcnnx(struct fsrcnnx_net *n)
+{
+	n->tried = true;
+	if (n->nslots > FSRCNNX_MAX_SLOTS) {
+		blog(LOG_ERROR, "[obs-fsr1-filter] %s braucht %d Zwischenbilder, Platz für %d", n->file, n->nslots,
+		     FSRCNNX_MAX_SLOTS);
+		return;
+	}
+	n->effect = load_effect(n->file);
+	if (!n->effect)
+		return;
+
+	n->p_image = gs_effect_get_param_by_name(n->effect, "image");
+	for (int i = 0; i < FSRCNNX_MAX_INPUTS; i++) {
+		char name[4];
+		snprintf(name, sizeof(name), "t%d", i);
+		n->p_t[i] = gs_effect_get_param_by_name(n->effect, name);
+	}
+	n->p_y2x = gs_effect_get_param_by_name(n->effect, "y2x");
+	n->p_texel = gs_effect_get_param_by_name(n->effect, "texel");
+	n->p_input_size = gs_effect_get_param_by_name(n->effect, "input_size");
+	n->p_y2x_size = gs_effect_get_param_by_name(n->effect, "y2x_size");
+
+	bool ok = n->p_image && n->p_y2x && n->p_texel && n->p_input_size && n->p_y2x_size;
+	n->src = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+	n->y2x = gs_texrender_create(GS_RGBA16F, GS_ZS_NONE);
+	ok = ok && n->src && n->y2x;
+	for (int i = 0; i < n->nslots; i++) {
+		n->slot[i] = gs_texrender_create(GS_RGBA16F, GS_ZS_NONE);
+		ok = ok && n->slot[i];
+	}
+	if (!ok) {
+		blog(LOG_ERROR, "[obs-fsr1-filter] %s: Parameter oder Zwischenziele fehlen", n->file);
+		fsrcnnx_free(n);
+		return;
+	}
+	blog(LOG_INFO, "[obs-fsr1-filter] %s geladen (%d Passes, %d Zwischenbilder)", n->file, n->npasses,
+	     n->nslots);
+}
+
 static void *fsr1_create(obs_data_t *settings, obs_source_t *context)
 {
 	struct fsr1_filter *f = bzalloc(sizeof(struct fsr1_filter));
@@ -327,6 +471,9 @@ static void *fsr1_create(obs_data_t *settings, obs_source_t *context)
 
 	/* RAVU ist ebenfalls optional. */
 	load_ravu(f);
+
+	/* SGSR ist optional und klein (ein Pass). */
+	f->sgsr_effect = load_effect("effects/sgsr.effect");
 
 	obs_leave_graphics();
 
@@ -356,8 +503,26 @@ static void *fsr1_create(obs_data_t *settings, obs_source_t *context)
 		f->r_lut_ar = gs_effect_get_param_by_name(f->ravu_effect, "lut_ar");
 	}
 
-	blog(LOG_INFO, "[obs-fsr1-filter] Filter angelegt, verfügbar: FSR 1%s%s",
-	     f->nis_effect ? ", NIS" : "", f->ravu_effect ? ", RAVU" : "");
+	if (f->sgsr_effect) {
+		f->g_input_size = gs_effect_get_param_by_name(f->sgsr_effect, "input_size");
+		f->g_texel = gs_effect_get_param_by_name(f->sgsr_effect, "texel");
+		f->g_edge_threshold = gs_effect_get_param_by_name(f->sgsr_effect, "edge_threshold");
+		f->g_edge_sharpness = gs_effect_get_param_by_name(f->sgsr_effect, "edge_sharpness");
+	}
+
+	f->fsrcnnx.file = "effects/fsrcnnx_8.effect";
+	f->fsrcnnx.passes = fsrcnnx_8_passes;
+	f->fsrcnnx.npasses = FSRCNNX_8_PASSES;
+	f->fsrcnnx.nslots = FSRCNNX_8_SLOTS;
+	f->fsrcnnx.agg_in = FSRCNNX_8_AGG_IN;
+	f->fsrcnnx_hq.file = "effects/fsrcnnx_16.effect";
+	f->fsrcnnx_hq.passes = fsrcnnx_16_passes;
+	f->fsrcnnx_hq.npasses = FSRCNNX_16_PASSES;
+	f->fsrcnnx_hq.nslots = FSRCNNX_16_SLOTS;
+	f->fsrcnnx_hq.agg_in = FSRCNNX_16_AGG_IN;
+
+	blog(LOG_INFO, "[obs-fsr1-filter] Filter angelegt, verfügbar: FSR 1%s%s%s, FSRCNNX bei Bedarf",
+	     f->nis_effect ? ", NIS" : "", f->ravu_effect ? ", RAVU" : "", f->sgsr_effect ? ", SGSR" : "");
 
 	fsr1_update(f, settings);
 	return f;
@@ -477,6 +642,49 @@ static void fsr1_tick(void *data, float seconds)
 			     "[obs-fsr1-filter] RAVU vergrößert nur (%ux%u -> %ux%u), verwende FSR 1", f->in_w,
 			     f->in_h, f->out_w, f->out_h);
 			f->warned_ravu_range = true;
+		}
+	}
+
+	if (f->algo == ALGO_SGSR) {
+		if (!f->sgsr_effect) {
+			if (!f->warned_no_sgsr) {
+				blog(LOG_WARNING, "[obs-fsr1-filter] SGSR nicht verfügbar, verwende FSR 1");
+				f->warned_no_sgsr = true;
+			}
+		} else if (f->out_w > f->in_w && f->out_h > f->in_h) {
+			f->active = ALGO_SGSR;
+			f->warned_sgsr_range = false;
+		} else if (!f->warned_sgsr_range) {
+			blog(LOG_WARNING,
+			     "[obs-fsr1-filter] SGSR vergrößert nur (%ux%u -> %ux%u), verwende FSR 1", f->in_w,
+			     f->in_h, f->out_w, f->out_h);
+			f->warned_sgsr_range = true;
+		}
+	}
+
+	if (f->algo == ALGO_FSRCNNX || f->algo == ALGO_FSRCNNX_HQ) {
+		struct fsrcnnx_net *n = f->algo == ALGO_FSRCNNX ? &f->fsrcnnx : &f->fsrcnnx_hq;
+		if (!n->tried) {
+			obs_enter_graphics();
+			load_fsrcnnx(n);
+			obs_leave_graphics();
+		}
+		/* Das Netz rechnet auf 2x; das Zwischenbild muss in eine Textur passen. */
+		bool fits = 2 * f->in_w <= MAX_OUTPUT_DIMENSION && 2 * f->in_h <= MAX_OUTPUT_DIMENSION;
+		if (!n->effect) {
+			if (!f->warned_no_fsrcnnx) {
+				blog(LOG_WARNING, "[obs-fsr1-filter] FSRCNNX nicht verfügbar, verwende FSR 1");
+				f->warned_no_fsrcnnx = true;
+			}
+		} else if (f->out_w > f->in_w && f->out_h > f->in_h && fits) {
+			f->active = f->algo;
+			f->warned_fsrcnnx_range = false;
+		} else if (!f->warned_fsrcnnx_range) {
+			blog(LOG_WARNING,
+			     "[obs-fsr1-filter] FSRCNNX vergrößert nur und braucht eine Quelle bis %ux%u "
+			     "(%ux%u -> %ux%u), verwende FSR 1",
+			     MAX_OUTPUT_DIMENSION / 2, MAX_OUTPUT_DIMENSION / 2, f->in_w, f->in_h, f->out_w, f->out_h);
+			f->warned_fsrcnnx_range = true;
 		}
 	}
 
@@ -679,6 +887,171 @@ static void render_ravu(struct fsr1_filter *f)
 	gs_blend_state_pop();
 }
 
+/* ---------------------------------------------------------------------- */
+/* SGSR: ein Pass                                                           */
+/* ---------------------------------------------------------------------- */
+static void render_sgsr(struct fsr1_filter *f)
+{
+	struct vec2 in_size;
+	struct vec2 texel;
+	vec2_set(&in_size, (float)f->in_w, (float)f->in_h);
+	vec2_set(&texel, 1.0f / (float)f->in_w, 1.0f / (float)f->in_h);
+
+	double s = f->sgsr_sharpness / 100.0;
+	if (s < 0.0)
+		s = 0.0;
+	if (s > 1.0)
+		s = 1.0;
+
+	if (!obs_source_process_filter_begin_with_color_space(f->context, GS_RGBA, GS_CS_SRGB,
+							      OBS_NO_DIRECT_RENDERING))
+		return; /* OBS hat den Filter bereits übersprungen */
+
+	if (f->g_input_size)
+		gs_effect_set_vec2(f->g_input_size, &in_size);
+	if (f->g_texel)
+		gs_effect_set_vec2(f->g_texel, &texel);
+	if (f->g_edge_threshold)
+		gs_effect_set_float(f->g_edge_threshold, SGSR_EDGE_THRESHOLD);
+	if (f->g_edge_sharpness)
+		gs_effect_set_float(f->g_edge_sharpness, (float)(1.0 + s));
+
+	gs_blend_state_push();
+	gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+
+	obs_source_process_filter_tech_end(f->context, f->sgsr_effect, f->out_w, f->out_h, "SGSR");
+
+	gs_blend_state_pop();
+}
+
+/* ---------------------------------------------------------------------- */
+/* FSRCNNX: COPY, Rechen-Passes, AGG (2x), OUT (Zielgröße)                  */
+/* ---------------------------------------------------------------------- */
+
+/* Parameter, die jeder Pass braucht. gs_technique_end() leert ALLE Parameter eines Effects
+ * (libobs effect.c), deshalb vor jedem Pass neu setzen. */
+static void fsrcnnx_set_common(struct fsrcnnx_net *n, gs_texture_t *src, const struct vec2 *texel,
+			       const struct vec2 *in_size, const struct vec2 *y2x_size)
+{
+	gs_effect_set_texture(n->p_image, src);
+	gs_effect_set_vec2(n->p_texel, texel);
+	gs_effect_set_vec2(n->p_input_size, in_size);
+	gs_effect_set_vec2(n->p_y2x_size, y2x_size);
+}
+
+/* Ein Pass mit einer Technique des Netz-Effects in ein Zwischenziel (ohne Mischen:
+ * die Zwischenbilder enthalten negative Werte, die erhalten bleiben müssen). */
+static bool fsrcnnx_draw(struct fsrcnnx_net *n, const char *tech_name, gs_texrender_t *target, uint32_t w,
+			 uint32_t h)
+{
+	gs_technique_t *tech = gs_effect_get_technique(n->effect, tech_name);
+	if (!tech)
+		return false;
+
+	gs_texrender_reset(target);
+	if (!gs_texrender_begin(target, w, h))
+		return false;
+
+	struct vec4 clear;
+	vec4_zero(&clear);
+	gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
+	gs_ortho(0.0f, (float)w, 0.0f, (float)h, -100.0f, 100.0f);
+
+	size_t passes = gs_technique_begin(tech);
+	for (size_t i = 0; i < passes; i++) {
+		gs_technique_begin_pass(tech, i);
+		gs_draw_sprite(NULL, 0, w, h);
+		gs_technique_end_pass(tech);
+	}
+	gs_technique_end(tech);
+
+	gs_texrender_end(target);
+	return true;
+}
+
+static void render_fsrcnnx(struct fsr1_filter *f, struct fsrcnnx_net *n)
+{
+	struct vec2 in_size;
+	struct vec2 texel;
+	struct vec2 y2x_size;
+	vec2_set(&in_size, (float)f->in_w, (float)f->in_h);
+	vec2_set(&texel, 1.0f / (float)f->in_w, 1.0f / (float)f->in_h);
+	vec2_set(&y2x_size, (float)(2 * f->in_w), (float)(2 * f->in_h));
+
+	/* Quellbild in ein eigenes Ziel: die ersten Passes und OUT lesen es. */
+	if (!obs_source_process_filter_begin_with_color_space(f->context, GS_RGBA, GS_CS_SRGB,
+							      OBS_NO_DIRECT_RENDERING))
+		return; /* OBS hat den Filter bereits übersprungen */
+
+	gs_texrender_reset(n->src);
+	bool src_ok = false;
+	if (gs_texrender_begin(n->src, f->in_w, f->in_h)) {
+		struct vec4 clear;
+		vec4_zero(&clear);
+		gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
+		gs_ortho(0.0f, (float)f->in_w, 0.0f, (float)f->in_h, -100.0f, 100.0f);
+		gs_blend_state_push();
+		gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
+		obs_source_process_filter_tech_end(f->context, n->effect, f->in_w, f->in_h, "COPY");
+		gs_blend_state_pop();
+		gs_texrender_end(n->src);
+		src_ok = true;
+	}
+	gs_texture_t *src = src_ok ? gs_texrender_get_texture(n->src) : NULL;
+	if (!src)
+		return;
+
+	const bool prev_srgb = gs_framebuffer_srgb_enabled();
+	gs_enable_framebuffer_srgb(false);
+	gs_blend_state_push();
+	gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
+
+	bool ok = true;
+	for (int p = 0; ok && p < n->npasses; p++) {
+		const struct fsrcnnx_pass *ps = &n->passes[p];
+		fsrcnnx_set_common(n, src, &texel, &in_size, &y2x_size);
+		for (int i = 0; i < ps->inputs; i++) {
+			gs_texture_t *t = ps->in[i] < 0 ? src : gs_texrender_get_texture(n->slot[ps->in[i]]);
+			if (!t || !n->p_t[i]) {
+				ok = false;
+				break;
+			}
+			gs_effect_set_texture(n->p_t[i], t);
+		}
+		ok = ok && fsrcnnx_draw(n, ps->tech, n->slot[ps->out], f->in_w, f->in_h);
+	}
+
+	gs_texture_t *sub = ok ? gs_texrender_get_texture(n->slot[n->agg_in]) : NULL;
+	if (sub && n->p_t[0]) {
+		fsrcnnx_set_common(n, src, &texel, &in_size, &y2x_size);
+		gs_effect_set_texture(n->p_t[0], sub);
+		ok = fsrcnnx_draw(n, "AGG", n->y2x, 2 * f->in_w, 2 * f->in_h);
+	} else {
+		ok = false;
+	}
+	gs_blend_state_pop();
+
+	gs_texture_t *y2x = ok ? gs_texrender_get_texture(n->y2x) : NULL;
+	gs_technique_t *tech = gs_effect_get_technique(n->effect, "OUT");
+	if (y2x && tech) {
+		/* OUT direkt in das Ausgabeziel des Filters */
+		fsrcnnx_set_common(n, src, &texel, &in_size, &y2x_size);
+		gs_effect_set_texture(n->p_y2x, y2x);
+
+		gs_blend_state_push();
+		gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+		size_t passes = gs_technique_begin(tech);
+		for (size_t i = 0; i < passes; i++) {
+			gs_technique_begin_pass(tech, i);
+			gs_draw_sprite(src, 0, f->out_w, f->out_h);
+			gs_technique_end_pass(tech);
+		}
+		gs_technique_end(tech);
+		gs_blend_state_pop();
+	}
+	gs_enable_framebuffer_srgb(prev_srgb);
+}
+
 static void fsr1_render(void *data, gs_effect_t *effect)
 {
 	UNUSED_PARAMETER(effect);
@@ -696,6 +1069,15 @@ static void fsr1_render(void *data, gs_effect_t *effect)
 	case ALGO_RAVU:
 		render_ravu(f);
 		break;
+	case ALGO_SGSR:
+		render_sgsr(f);
+		break;
+	case ALGO_FSRCNNX:
+		render_fsrcnnx(f, &f->fsrcnnx);
+		break;
+	case ALGO_FSRCNNX_HQ:
+		render_fsrcnnx(f, &f->fsrcnnx_hq);
+		break;
 	case ALGO_FSR1:
 	default:
 		render_fsr1(f);
@@ -708,18 +1090,19 @@ static void apply_visibility(obs_properties_t *props, obs_data_t *settings)
 {
 	const char *algo = obs_data_get_string(settings, S_ALGO);
 	const bool nis = algo && strcmp(algo, V_ALGO_NIS) == 0;
-	const bool ravu = algo && strcmp(algo, V_ALGO_RAVU) == 0;
-	const bool fsr = !nis && !ravu;
+	const bool sgsr = algo && strcmp(algo, V_ALGO_SGSR) == 0;
+	/* RAVU und FSRCNNX haben keine eigenen Regler (die Schärfe steckt in den trainierten Gewichten). */
+	const bool fsr = !algo || !*algo || strcmp(algo, V_ALGO_FSR1) == 0;
 	const bool custom = obs_data_get_bool(settings, S_CUSTOM);
 
 	obs_property_set_visible(obs_properties_get(props, S_FACTOR), !custom);
 	obs_property_set_visible(obs_properties_get(props, S_WIDTH), custom);
 	obs_property_set_visible(obs_properties_get(props, S_HEIGHT), custom);
 
-	/* RAVU hat keine eigenen Regler (Schärfe steckt in den trainierten Gewichten). */
 	obs_property_set_visible(obs_properties_get(props, S_SHARPNESS), fsr);
 	obs_property_set_visible(obs_properties_get(props, S_DENOISE), fsr);
 	obs_property_set_visible(obs_properties_get(props, S_NIS_SHARPNESS), nis);
+	obs_property_set_visible(obs_properties_get(props, S_SGSR_SHARPNESS), sgsr);
 }
 
 static bool settings_modified(obs_properties_t *props, obs_property_t *p, obs_data_t *settings)
@@ -739,6 +1122,9 @@ static obs_properties_t *fsr1_properties(void *data)
 	obs_property_list_add_string(p, T_ALGO_FSR1, V_ALGO_FSR1);
 	obs_property_list_add_string(p, T_ALGO_NIS, V_ALGO_NIS);
 	obs_property_list_add_string(p, T_ALGO_RAVU, V_ALGO_RAVU);
+	obs_property_list_add_string(p, T_ALGO_SGSR, V_ALGO_SGSR);
+	obs_property_list_add_string(p, T_ALGO_FSRCNNX, V_ALGO_FSRCNNX);
+	obs_property_list_add_string(p, T_ALGO_FSRCNNX_HQ, V_ALGO_FSRCNNX_HQ);
 	obs_property_set_modified_callback(p, settings_modified);
 
 	p = obs_properties_add_bool(props, S_CUSTOM, T_CUSTOM);
@@ -751,6 +1137,7 @@ static obs_properties_t *fsr1_properties(void *data)
 	obs_properties_add_float_slider(props, S_SHARPNESS, T_SHARPNESS, 0.0, 100.0, 1.0);
 	obs_properties_add_bool(props, S_DENOISE, T_DENOISE);
 	obs_properties_add_float_slider(props, S_NIS_SHARPNESS, T_NIS_SHARPNESS, 0.0, 100.0, 1.0);
+	obs_properties_add_float_slider(props, S_SGSR_SHARPNESS, T_SGSR_SHARPNESS, 0.0, 100.0, 1.0);
 
 	return props;
 }
@@ -766,6 +1153,8 @@ static void fsr1_defaults(obs_data_t *settings)
 	/* Webcams rauschen: RCAS-Entrauschung standardmäßig an. */
 	obs_data_set_default_bool(settings, S_DENOISE, true);
 	obs_data_set_default_double(settings, S_NIS_SHARPNESS, 50.0);
+	/* 100 % = Kantenschärfe 2,0 wie im Original */
+	obs_data_set_default_double(settings, S_SGSR_SHARPNESS, 100.0);
 }
 
 static uint32_t fsr1_get_width(void *data)
@@ -782,7 +1171,7 @@ static uint32_t fsr1_get_height(void *data)
 
 /*
  * Bewusst ohne OBS_SOURCE_SRGB: OBS rendert den Filter dann im Gamma-Raum,
- * den FSR 1, NIS und RAVU erwarten (Eingabe und Ausgabe perceptual, nicht linear).
+ * den alle Algorithmen erwarten (Eingabe und Ausgabe perceptual, nicht linear).
  */
 static struct obs_source_info fsr1_filter_info = {
 	.id = FILTER_ID,
@@ -813,10 +1202,11 @@ void obs_module_unload(void)
 
 const char *obs_module_name(void)
 {
-	return "FSR 1 / NIS / RAVU Upscale Filter";
+	return "FSR 1 / NIS / RAVU / SGSR / FSRCNNX Upscale Filter";
 }
 
 const char *obs_module_description(void)
 {
-	return "Hochskalierungsfilter mit AMD FidelityFX Super Resolution 1.0, NVIDIA Image Scaling und RAVU-Zoom-AR";
+	return "Hochskalierungsfilter mit AMD FidelityFX Super Resolution 1.0, NVIDIA Image Scaling, RAVU-Zoom-AR, "
+	       "Snapdragon Game Super Resolution und FSRCNNX";
 }

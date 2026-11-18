@@ -3,15 +3,21 @@
   <id>com.obsproject.Studio.Plugin.Fsr1Filter</id>
   <extends>com.obsproject.Studio</extends>
   <name>FSR 1 Upscale Filter</name>
-  <summary>Video filter that upscales sources with AMD FidelityFX Super Resolution 1.0</summary>
+  <summary>Video filter that upscales sources with FSR 1, NIS, RAVU, SGSR or the FSRCNNX neural network</summary>
   <description>
-    <p>Adds a video filter named "FSR 1 Upscale" to OBS Studio. It upscales a source,
-    for example a webcam or a low-resolution capture card, to a higher resolution
-    using the FSR 1 algorithm (edge-adaptive upsampling followed by contrast-adaptive
-    sharpening), with an optional noise-aware sharpening mode.</p>
+    <p>Adds an upscaling video filter to OBS Studio. It upscales a source, for example a
+    webcam, a low-resolution capture card or a game, to a higher resolution. Five
+    algorithms are available, all running as plain shaders on any GPU:</p>
+    <ul>
+      <li>AMD FidelityFX Super Resolution 1.0 (edge-adaptive upsampling and sharpening)</li>
+      <li>NVIDIA Image Scaling</li>
+      <li>RAVU-Zoom-AR from the mpv prescalers</li>
+      <li>Snapdragon Game Super Resolution 1, fast and suited for games</li>
+      <li>FSRCNNX, a small neural network from mpv for cameras and real-life content</li>
+    </ul>
   </description>
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>GPL-2.0-or-later</project_license>
+  <project_license>GPL-2.0-or-later AND LGPL-3.0-or-later AND MIT AND BSD-3-Clause</project_license>
   <developer id="io.github.corrgan">
     <name>obs-fsr1-filter contributors</name>
   </developer>

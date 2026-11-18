@@ -2,7 +2,7 @@ Drittanbieter-Lizenzen / Third-party notices
 =============================================
 
 Dieses Plugin steht unter GPL-2.0-or-later (siehe LICENSE). Die Shader enthalten
-Portierungen der folgenden Projekte, die unter der MIT-Lizenz stehen. Deren
+Portierungen der folgenden Projekte (MIT, BSD-3-Clause, LGPL-3.0-or-later). Deren
 Lizenztexte werden hier wie verlangt mitgeliefert.
 
 -----------------------------------------------------------------------------
@@ -84,3 +84,67 @@ Version 3 oder (nach Wahl) einer späteren Version:
 Volltexte: LICENSES/LGPL-3.0.txt und LICENSES/GPL-3.0.txt (die LGPL-3.0 baut auf
 der GPL-3.0 auf). Die Originaldateien lassen sich mit tools/gen_ravu.py aus
 ravu-zoom-ar-r3-rgb.hook jederzeit neu erzeugen.
+
+
+-----------------------------------------------------------------------------
+Snapdragon Game Super Resolution 1 (sgsr1_mobile.h, sgsr1_shader_mobile.hlsl)
+https://github.com/SnapdragonStudios/snapdragon-gsr (sgsr/v1)
+Verwendet in: data/effects/sgsr.effect
+-----------------------------------------------------------------------------
+
+Copyright (c) 2023, Qualcomm Innovation Center, Inc. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+
+SPDX-License-Identifier: BSD-3-Clause
+
+-----------------------------------------------------------------------------
+FSRCNNX (FSRCNNX_x2_8-0-4-1.glsl, FSRCNNX_x2_16-0-4-1.glsl) von igv
+https://github.com/igv/FSRCNN-TensorFlow (Releases)
+Verwendet in: data/effects/fsrcnnx_8.effect, data/effects/fsrcnnx_16.effect,
+              src/fsrcnnx_8_passes.h, src/fsrcnnx_16_passes.h
+              (erzeugt mit tools/gen_fsrcnnx.py)
+-----------------------------------------------------------------------------
+
+Diese Dateien sind aus dem Original übersetzt und enthalten dessen trainierte
+Gewichte. Sie stehen wie das Original unter der GNU Lesser General Public
+License, Version 3 oder (nach Wahl) einer späteren Version:
+
+  Copyright (C) 2017-2021 igv
+
+  This program is free software; you can redistribute it and/or
+  modify it under the terms of the GNU Lesser General Public
+  License as published by the Free Software Foundation; either
+  version 3.0 of the License, or (at your option) any later version.
+
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+  Lesser General Public License for more details.
+
+Volltexte: LICENSES/LGPL-3.0.txt und LICENSES/GPL-3.0.txt. Die Dateien lassen
+sich mit tools/gen_fsrcnnx.py aus den Originalen jederzeit neu erzeugen.
