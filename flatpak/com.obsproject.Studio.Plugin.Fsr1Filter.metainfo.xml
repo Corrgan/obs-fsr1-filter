@@ -23,6 +23,12 @@
   </developer>
   <url type="homepage">https://github.com/Corrgan/obs-fsr1-filter</url>
   <releases>
+    <release version="0.2.0" date="2026-11-18">
+      <description>
+        <p>New algorithms: Snapdragon Game Super Resolution 1 (SGSR) and the FSRCNNX neural
+        network in two sizes (8 and 16 channels). README in English.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-11-05"/>
   </releases>
 </component>
