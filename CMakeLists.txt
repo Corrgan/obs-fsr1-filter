@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(obs-fsr1-filter VERSION 0.1.0 LANGUAGES C)
+project(obs-fsr1-filter VERSION 0.2.0 LANGUAGES C)
 
 find_package(libobs REQUIRED)
 
