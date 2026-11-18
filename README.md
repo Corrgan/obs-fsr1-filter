@@ -117,9 +117,10 @@ setup, not in this repository). As of 18 Nov 2026:
 | SGSR (1.5× and 2×) | equal to a recomputation of the Qualcomm original: mean 0.3/255; single outliers only where the edge check lands exactly on the threshold or the original itself is numerically unstable |
 | FSR 1, NIS, RAVU, FSRCNNX 1.5× | compiles, renders, plausible (no pixel comparison with the original) |
 
-In addition, on 18 Nov 2026 all algorithms were tested in OBS on real hardware (see "Test
-setup"): all of them work, including SGSR, FSRCNNX 8 and FSRCNNX 16. Not tested: Direct3D
-(Windows) and performance.
+In addition, on 18 Nov 2026 all algorithms were tested in OBS on real GPUs from all three
+vendors – NVIDIA GeForce RTX 5080, Intel Arc A310 and AMD Radeon RX 6900 XT (see "Test setup"):
+all of them work, including SGSR, FSRCNNX 8 and FSRCNNX 16. Not tested: Direct3D (Windows) and
+performance.
 
 Tip: if the canvas does not match an even factor (e.g. 1080p camera, 1440p canvas), enable
 "Use fixed output size" and enter the canvas size (2560 × 1440). Then OBS does not have to
@@ -191,8 +192,15 @@ This needs the libobs development files (e.g. `libobs-dev`).
 
 Runs with OBS 33.0.1 as a Flatpak (Flathub) on Fedora with the NVIDIA driver and OpenGL
 (webcam source: DroidCam). On 18 Nov 2026 all six entries of the algorithm list (FSR 1, NIS,
-RAVU, SGSR, FSRCNNX 8, FSRCNNX 16) were tested in OBS on real hardware: they work and look good.
-Other graphics backends (Direct3D, Metal) and other drivers have not been tried.
+RAVU, SGSR, FSRCNNX 8, FSRCNNX 16) were tested in OBS on these GPUs – they work and look good:
+
+| GPU | Vendor |
+|---|---|
+| GeForce RTX 5080 | NVIDIA |
+| Arc A310 | Intel |
+| Radeon RX 6900 XT | AMD |
+
+Other graphics backends (Direct3D, Metal) have not been tried.
 
 ## Notes and known limits
 
