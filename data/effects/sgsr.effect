@@ -1,0 +1,155 @@
+// Snapdragon Game Super Resolution 1 (SGSR, Variante mit Kantenrichtung) für OBS Studio
+// Übersetzt aus sgsr1_mobile.h und sgsr1_shader_mobile.hlsl,
+// https://github.com/SnapdragonStudios/snapdragon-gsr (sgsr/v1).
+// Copyright (c) 2023, Qualcomm Innovation Center, Inc. Lizenz: BSD-3-Clause,
+// siehe THIRD_PARTY_NOTICES.txt.
+//
+// Ein einziger Pass: Lanczos-ähnliche 12-Punkt-Interpolation der Helligkeit mit adaptiver
+// Schärfung an Kanten, auf das bilinear vergrößerte Bild aufgeschlagen. Beliebiges
+// Vergrößerungsverhältnis. Betriebsart RGBA (Modus 1 im Original): Grün dient als Helligkeit.
+//
+// Abweichungen vom Original:
+//  * Gather4 (GatherGreen) ist durch vier Punkt-Abtastungen in genau der Reihenfolge von
+//    Direct3D ersetzt (x = unten links, y = unten rechts, z = oben rechts, w = oben links),
+//    weil Gather nicht auf allen Backends von OBS geht.
+//  * Alpha kommt aus der Quelle (das Original setzt 1.0).
+//  * Kantenschwelle und -schärfe sind Regler statt fester Konstanten.
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform float2 input_size;      // Quellgröße in Pixeln
+uniform float2 texel;           // 1 / input_size
+uniform float edge_threshold;   // Original: 8/255 (Mobil), 4/255 (VR)
+uniform float edge_sharpness;   // Original: 2.0, sinnvoll 1.0 bis 2.0
+
+sampler_state point_clamp {
+	Filter    = Point;
+	AddressU  = Clamp;
+	AddressV  = Clamp;
+};
+
+sampler_state linear_clamp {
+	Filter    = Linear;
+	AddressU  = Clamp;
+	AddressV  = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v_in)
+{
+	VertData vert_out;
+	vert_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+	vert_out.uv  = v_in.uv;
+	return vert_out;
+}
+
+// GatherGreen an einer Texelecke p: die vier umliegenden Texel, Reihenfolge wie Direct3D
+float4 GatherG(float2 p)
+{
+	float4 g;
+	g.x = image.Sample(point_clamp, p + float2(-0.5, 0.5) * texel).g;
+	g.y = image.Sample(point_clamp, p + float2(0.5, 0.5) * texel).g;
+	g.z = image.Sample(point_clamp, p + float2(0.5, -0.5) * texel).g;
+	g.w = image.Sample(point_clamp, p + float2(-0.5, -0.5) * texel).g;
+	return g;
+}
+
+float FastLanczos2(float x)
+{
+	float wA = x - 4.0;
+	float wB = x * wA - wA;
+	wA *= wA;
+	return wB * wA;
+}
+
+// Gewicht eines Punkts (Abstand dx/dy, Wert c) mit Kantenrichtung dir und Streuung std
+float2 WeightY(float dx, float dy, float c, float std, float2 dir)
+{
+	float edgeDis = dx * dir.y + dy * dir.x;
+	float x = (dx * dx + dy * dy) + (edgeDis * edgeDis) * ((saturate(c * c * std) * 0.7) - 1.0);
+	float w = FastLanczos2(x);
+	return float2(w, w * c);
+}
+
+float2 EdgeDirection(float4 left, float4 right)
+{
+	float RxLz = right.x - left.z;
+	float RwLy = right.w - left.y;
+	float2 delta;
+	delta.x = RxLz + RwLy;
+	delta.y = RxLz - RwLy;
+	float lengthInv = 1.0 / sqrt(delta.x * delta.x + 0.0000307574 + delta.y * delta.y);  // rsqrt: nicht in jedem OBS-Backend
+	return delta * lengthInv;
+}
+
+float4 PSSgsr(VertData v_in) : TARGET
+{
+	float2 uv = v_in.uv;
+	float4 pix = image.Sample(linear_clamp, uv);
+
+	float2 imgCoord = uv * input_size + float2(-0.5, 0.5);
+	float2 imgCoordPixel = floor(imgCoord);
+	float2 coord = imgCoordPixel * texel;
+	float2 pl = imgCoord - imgCoordPixel;
+	float4 left = GatherG(coord);
+
+	float edgeVote = abs(left.z - left.y) + abs(pix.g - left.y) + abs(pix.g - left.z);
+	if (edgeVote > edge_threshold) {
+		coord.x += texel.x;
+
+		float4 right = GatherG(coord + float2(texel.x, 0.0));
+		float4 upDown;
+		upDown.xy = GatherG(coord + float2(0.0, -texel.y)).wz;
+		upDown.zw = GatherG(coord + float2(0.0, texel.y)).yx;
+
+		float mean = (left.y + left.z + right.x + right.w) * 0.25;
+		left = left - float4(mean, mean, mean, mean);
+		right = right - float4(mean, mean, mean, mean);
+		upDown = upDown - float4(mean, mean, mean, mean);
+		float center = pix.g - mean;
+
+		float sum = abs(left.x) + abs(left.y) + abs(left.z) + abs(left.w)
+			+ abs(right.x) + abs(right.y) + abs(right.z) + abs(right.w)
+			+ abs(upDown.x) + abs(upDown.y) + abs(upDown.z) + abs(upDown.w);
+		// Original: 1.014185e+01 / sum (ohne Schutz; eine völlig glatte Umgebung kommt
+		// wegen der Kantenschwelle nicht hierher, der Schutz kostet nichts)
+		float sumMean = 10.14185 / max(sum, 0.000001);
+		float std = sumMean * sumMean;
+		float2 dir = EdgeDirection(left, right);
+
+		float2 aWY = WeightY(pl.x, pl.y + 1.0, upDown.x, std, dir);
+		aWY += WeightY(pl.x - 1.0, pl.y + 1.0, upDown.y, std, dir);
+		aWY += WeightY(pl.x - 1.0, pl.y - 2.0, upDown.z, std, dir);
+		aWY += WeightY(pl.x, pl.y - 2.0, upDown.w, std, dir);
+		aWY += WeightY(pl.x + 1.0, pl.y - 1.0, left.x, std, dir);
+		aWY += WeightY(pl.x, pl.y - 1.0, left.y, std, dir);
+		aWY += WeightY(pl.x, pl.y, left.z, std, dir);
+		aWY += WeightY(pl.x + 1.0, pl.y, left.w, std, dir);
+		aWY += WeightY(pl.x - 1.0, pl.y - 1.0, right.x, std, dir);
+		aWY += WeightY(pl.x - 2.0, pl.y - 1.0, right.y, std, dir);
+		aWY += WeightY(pl.x - 2.0, pl.y, right.z, std, dir);
+		aWY += WeightY(pl.x - 1.0, pl.y, right.w, std, dir);
+
+		float finalY = aWY.y / aWY.x;
+		float max4 = max(max(left.y, left.z), max(right.x, right.w));
+		float min4 = min(min(left.y, left.z), min(right.x, right.w));
+		finalY = clamp(edge_sharpness * finalY, min4, max4);
+
+		float deltaY = finalY - center;
+		pix.rgb = saturate(pix.rgb + float3(deltaY, deltaY, deltaY));
+	}
+	return pix;
+}
+
+technique SGSR
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSSgsr(v_in);
+	}
+}

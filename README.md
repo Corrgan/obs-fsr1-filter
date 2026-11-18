@@ -1,12 +1,23 @@
 # obs-fsr1-filter
 
-Videofilter für OBS Studio, der ein Bild hochskaliert. Drei Algorithmen stehen zur Wahl:
-**AMD FidelityFX Super Resolution 1.0** (EASU + RCAS), **NVIDIA Image Scaling (NIS)** und
-**RAVU-Zoom-AR** (aus den mpv-prescalers). Gedacht für Webcams. Alle drei sind reine Shader
-und laufen auf jeder Grafikkarte, die OBS unterstützt (NVIDIA, AMD, Intel).
+Videofilter für OBS Studio, der ein Bild hochskaliert. Fünf Algorithmen stehen zur Wahl:
+**AMD FidelityFX Super Resolution 1.0** (EASU + RCAS), **NVIDIA Image Scaling (NIS)**,
+**RAVU-Zoom-AR** (aus den mpv-prescalers), **Snapdragon Game Super Resolution 1 (SGSR)** und
+das neuronale Netz **FSRCNNX** (aus mpv, zwei Größen). Gedacht für Webcams, Capture-Karten und
+Spiele. Alle sind reine Shader und laufen auf jeder Grafikkarte, die OBS unterstützt (NVIDIA,
+AMD, Intel) – auch FSRCNNX braucht keine KI-Hardware.
 
-Der Filter heißt in OBS **„Hochskalierung (FSR 1 / NIS / RAVU)"**. Bestehende Szenen mit dem
-alten FSR-Filter funktionieren weiter (die Filter-ID ist unverändert).
+Der Filter heißt in OBS **„Hochskalierung (FSR 1 / NIS / RAVU / SGSR / FSRCNNX)"**. Bestehende
+Szenen mit dem alten FSR-Filter funktionieren weiter (die Filter-ID ist unverändert).
+
+Welcher Algorithmus wofür (Faustregel):
+
+| Inhalt | Empfehlung |
+|---|---|
+| Kamera, IRL, Gesichter, Text im Bild | **FSRCNNX 8** (bei Leistung übrig: FSRCNNX 16) |
+| Spiele, Capture-Karte | **SGSR** oder FSR 1 (beide schnell, scharfe Kanten) |
+| Glatte Faktoren 1×–2× mit wenig Rechenzeit | NIS |
+| Beliebige Faktoren, weiche Kanten ohne Überschwinger | RAVU-Zoom-AR |
 
 ## Wie es funktioniert
 
@@ -26,12 +37,13 @@ KI-Hochskalierung.
 
 | Einstellung | Bedeutung |
 |---|---|
-| Algorithmus | FSR 1 (Standard), NIS oder RAVU-Zoom-AR |
+| Algorithmus | FSR 1 (Standard), NIS, RAVU-Zoom-AR, SGSR, FSRCNNX 8 oder FSRCNNX 16 |
 | Skalierungsfaktor | 1,0–4,0 (Standard 1,5, passend für 720p → 1080p) |
 | Feste Ausgabegröße verwenden | statt Faktor eine feste Breite × Höhe |
 | Schärfe (%) | nur FSR 1: RCAS-Stärke, Standard 80 % |
 | Rauschen beim Schärfen reduzieren | nur FSR 1: RCAS-Denoise, Standard an (Webcams rauschen) |
 | Schärfe (NIS, %) | nur NIS: Standard 50 % |
+| Kantenschärfe (SGSR, %) | nur SGSR: 0 % = Kantenschärfe 1,0, 100 % = 2,0 wie im Original (Standard) |
 
 ### NIS: Status und Grenzen
 
@@ -40,8 +52,8 @@ KI-Hochskalierung.
 - NIS läuft in einem einzigen Pass, mit eigener Effect-Datei (`data/effects/nis.effect`).
   Lässt sie sich nicht kompilieren, steht der Grund im OBS-Log (Zeilen mit
   `obs-fsr1-filter`) und FSR 1 funktioniert unverändert weiter.
-- **Der NIS-Shader ist noch nicht in OBS getestet.** Das Plugin-C ist gegen die libobs-Header
-  geprüft, der Shader gegen die bekannten OBS-Parser-Stolpersteine durchgesehen, mehr nicht.
+- Der NIS-Shader übersetzt und rendert im OBS-Lauftest (siehe unten); seine Pixel sind nicht
+  mit dem Original verglichen.
 - Der Shader und die Koeffiziententabellen entstehen aus Generatoren in `tools/`
   (`gen_nis_effect.py`, `extract_nis_coefs.py`); nicht von Hand ändern.
 
@@ -59,8 +71,56 @@ KI-Hochskalierung.
   Der Generator übersetzt Zeile für Zeile und bricht bei allem ab, was er nicht kennt.
 - **Geprüft:** In einem Software-WebGL-Test liefern Original und Übersetzung auf einem
   Testbild (Kanten, Verläufe, Rauschen, weiße und schwarze Flächen) bei 1,33×, 1,5× und 2×
-  dieselben Pixel (Abweichung < 0,00005). **Nicht geprüft:** der Lauf in OBS selbst.
+  dieselben Pixel (Abweichung < 0,00005). Im OBS-Lauftest übersetzt und rendert er (siehe unten).
 - Rechenaufwand ähnlich NIS (36 Bildpunkte plus 14 Tabellenzugriffe pro Ausgabepixel).
+
+### SGSR: Status und Grenzen
+
+- Snapdragon Game Super Resolution 1 von Qualcomm (BSD-3-Clause), Variante mit
+  Kantenrichtung: ein einziger Pass, 12-Punkt-Lanczos-ähnliche Interpolation der Helligkeit mit
+  adaptiver Kantenschärfung, auf das bilinear vergrößerte Bild aufgeschlagen. Sehr günstig, für
+  Spiele gedacht, beliebige Vergrößerung.
+- Nur echte Vergrößerungen (sonst FSR 1, mit Hinweis im Log).
+- Kantenschwelle fest 8/255 (Original für Mobilgeräte); die strengere VR-Schwelle 4/255 würde
+  Webcam-Rauschen mitschärfen.
+- Abweichungen vom Original: Gather4 ist durch vier Punkt-Abtastungen in der Reihenfolge von
+  Direct3D ersetzt, Alpha kommt aus der Quelle, die Kantenschärfe ist ein Regler.
+
+### FSRCNNX: Status und Grenzen
+
+- FSRCNNX von igv (LGPL-3.0-or-later) ist ein kleines neuronales Netz aus mpv, trainiert auf
+  echten Fotos: Es rechnet die Helligkeit auf die doppelte Größe und erfindet dabei feine
+  Details (Haare, Text, Stoff), die klassische Verfahren nur weichzeichnen. Zwei Größen:
+  **FSRCNNX 8** (8 Kanäle, 13 Passes) und **FSRCNNX 16** (16 Kanäle, 25 Passes, etwa viermal so
+  viel Rechenzeit).
+- Das Netz rechnet immer auf 2×; ein letzter Pass bringt das Ergebnis auf die Zielgröße
+  (Catmull-Rom). Bei 2× ist es am besten, 1,5× (720p → 1080p) geht ebenfalls gut, bei mehr als
+  2× wird das 2×-Bild klassisch weiter vergrößert. Nur echte Vergrößerungen, Quelle höchstens
+  4096 Pixel breit/hoch (sonst FSR 1, mit Hinweis im Log).
+- Farbe: Das Netz arbeitet nur auf Y' (BT.709, Gamma-Raum). Die Farbe kommt bilinear aus der
+  Quelle und bleibt exakt erhalten, nur die Helligkeit wird ersetzt – wie bei mpv.
+- Grafikspeicher: Zwischenbilder RGBA16F in Eingabegröße (FSRCNNX 8: 6, FSRCNNX 16: 12, dank
+  Lebensdauer-Analyse) plus ein Bild in doppelter Größe. Bei einer 720p-Webcam etwa 75 MB
+  (FSRCNNX 8) bzw. 120 MB (FSRCNNX 16), bei 1080p gut das Doppelte.
+- Die Effects (bis 320 KB) werden erst geladen, wenn FSRCNNX gewählt ist, damit das Anlegen der
+  Filter nicht langsamer wird.
+- Effects und Pass-Tabellen entstehen mit `tools/gen_fsrcnnx.py` aus den Originalen
+  `FSRCNNX_x2_8-0-4-1.glsl` und `FSRCNNX_x2_16-0-4-1.glsl` (Releases von FSRCNN-TensorFlow).
+
+### Geprüft in OBS (Lauftest)
+
+Ein Lauftest startet libobs 30.2 ohne Fenster (OpenGL über Xvfb und Mesa llvmpipe), lädt das
+gebaute Plugin, schickt ein Testbild (Kanten, Verläufe, Kreis, Streifen, Schachbrett, Rauschen)
+durch jeden Algorithmus und liest das Ergebnis zurück (liegt bei der Nachtschicht, nicht in
+diesem Repo). Stand 18.11.2026:
+
+| Algorithmus | Ergebnis |
+|---|---|
+| FSRCNNX 8 / 16 (2×) | gleich der Nachrechnung des mpv-Originals: höchstens 1,9/255, im Mittel 0,3/255 |
+| SGSR (1,5× und 2×) | gleich der Nachrechnung des Qualcomm-Originals: im Mittel 0,3/255; einzelne Ausreißer nur dort, wo die Kantenprüfung genau auf der Schwelle liegt oder das Original selbst numerisch instabil ist |
+| FSR 1, NIS, RAVU, FSRCNNX 1,5× | übersetzt, rendert, plausibel (kein Pixelvergleich mit dem Original) |
+
+Nicht geprüft: Direct3D (Windows) und echte Grafikkarten; Rechenzeiten auf echter Hardware.
 
 Tipp: Passt die Leinwand nicht zu einem glatten Faktor (z. B. 1080p-Kamera, 1440p-Leinwand),
 „Feste Ausgabegröße verwenden" aktivieren und die Leinwandgröße eintragen (2560 × 1440).
@@ -135,7 +195,8 @@ wurden nicht ausprobiert.
 
 - Im OBS-Log (Hilfe → Protokolldateien) stehen alle Meldungen des Plugins mit
   `[obs-fsr1-filter]`. Beim Start zeigt jeder Filter, welche Algorithmen geladen sind
-  („Filter angelegt, verfügbar: FSR 1, NIS, RAVU"). Beim Umschalten oder wenn sich Kamera- oder
+  („Filter angelegt, verfügbar: FSR 1, NIS, RAVU, SGSR, FSRCNNX bei Bedarf"; FSRCNNX meldet sich
+  beim ersten Einschalten mit „effects/fsrcnnx_8.effect geladen"). Beim Umschalten oder wenn sich Kamera- oder
   Zielgröße ändern, folgt eine Zeile wie `'Zencam': RAVU 1920x1080 -> 2560x1440`. Weicht der
   Filter auf FSR 1 aus, steht dort zusätzlich „(gewählt: …, Rückfall)".
 
@@ -167,6 +228,10 @@ HLSL-/GLSL-Compiler:
 - **Keine Matrizen oder Arrays.** Das Original von RAVU nutzt `mat4x3`/`matrixCompMult`;
   die Übersetzung rechnet stattdessen mit einzelnen `float3`-Werten.
 - Statt Gather4 werden einzelne Punkt-Abtastungen verwendet (läuft auf allen Backends).
+- **`gs_technique_end()` leert alle Parameter eines Effects** (libobs `effect.c`). Wer mit
+  einem Effect mehrere Passes nacheinander rechnet (FSRCNNX), muss Texturen und Werte vor jedem
+  Pass neu setzen – sonst rechnet ab dem zweiten Pass alles mit Nullen.
+- **Keine Schleifen** in den generierten Shadern (Catmull-Rom ist ausgeschrieben).
 
 ## Lizenz
 
@@ -176,6 +241,8 @@ Die Shader basieren auf AMDs `ffx_fsr1.h`
 (MIT-Lizenz, Copyright © 2021 Advanced Micro Devices, Inc.) und NVIDIAs NIS
 (`NIS_Scaler.h`, `NIS_Config.h`; MIT-Lizenz, Copyright © 2022 NVIDIA Corporation & Affiliates).
 
-Ausnahme: Die RAVU-Dateien (`data/effects/ravu.effect`, `data/ravu/*.bin`) sind aus RAVU von
-Bin Jin übersetzt und stehen wie das Original unter **LGPL-3.0-or-later**
-(Volltexte in `LICENSES/`).
+Ausnahmen: Die RAVU-Dateien (`data/effects/ravu.effect`, `data/ravu/*.bin`) sind aus RAVU von
+Bin Jin übersetzt, die FSRCNNX-Dateien (`data/effects/fsrcnnx_*.effect`,
+`src/fsrcnnx_*_passes.h`) aus FSRCNNX von igv; beide stehen wie die Originale unter
+**LGPL-3.0-or-later** (Volltexte in `LICENSES/`). Der SGSR-Shader (`data/effects/sgsr.effect`)
+basiert auf Qualcomms Snapdragon GSR 1 (BSD-3-Clause, Text in `THIRD_PARTY_NOTICES.txt`).
